@@ -1,0 +1,39 @@
+# UTF-8
+# 这是PyInstaller的版本资源文件。
+# 请根据您的程序信息修改下面的值。
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    # 文件版本号，格式为 (主版本, 次版本, 修订号, 构建号)
+    filevers=(1, 0, 2, 0),
+    # 产品版本号，同上
+    prodvers=(1, 0, 2, 0),
+    # 文件标志掩码，通常保持默认
+    mask=0x3f,
+    # 文件标志，通常保持默认
+    flags=0x0,
+    # 目标操作系统，0x40004L 表示 Windows NT
+    OS=0x40004,
+    # 文件类型，0x1L 表示应用程序 .exe
+    fileType=0x1,
+    # 文件子类型，通常为 0
+    subtype=0x0,
+    # 文件日期，通常为 0
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        u'040904B0', # 语言ID和字符集ID (040904B0 = U.S. English, Unicode)
+        [StringStruct(u'江南一根葱', u'懒汉工作室'),
+        StringStruct(u'FileDescription', u'NBpxe Network Boot Server'),
+        StringStruct(u'FileVersion', u'1.0.2'),
+        StringStruct(u'InternalName', u'NBpxeServer'),
+        StringStruct(u'LegalCopyright', u'Copyright © 2025 江南一根葱版权所有.'),
+        StringStruct(u'OriginalFilename', u'NBpxeServer.exe'),
+        StringStruct(u'ProductName', u'NBpxe Server Suite'),
+        StringStruct(u'ProductVersion', u'1.0.2')])
+      ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)
