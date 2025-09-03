@@ -37,14 +37,7 @@ jobs:
         pip install nuitka
 
     - name: Compile with Nuitka
-      run: |
-        python -m nuitka --onefile --windows-console-mode=disable --enable-plugin=tk-inter `
-        --windows-uac-admin `
-        
-        --output-dir=dist `
-        --output-filename=${{ matrix.output-name }} `
-        --windows-icon-from-ico=icon.ico `
-        NBPxeServer.py
+      run: python -m nuitka --onefile --windows-console-mode=disable --enable-plugin=tk-inter --windows-uac-admin --output-dir=dist --output-filename=${{ matrix.output-name }} --windows-icon-from-ico=icon.ico NBPxeServer.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
