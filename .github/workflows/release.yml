@@ -49,7 +49,9 @@ jobs:
 
     - name: Compile with Nuitka
       run: |
-        python -m nuitka --standalone --onefile --windows-disable-console --windows-icon-from-ico=icon.ico `
+        python -m nuitka --standalone --onefile --windows-console-mode=disable --windows-icon-from-ico=icon.ico `
+        --enable-plugin=tk-inter `
+        --accept-all-yes `
         --file-version="${{ steps.get_version.outputs.VERSION }}" `
         --product-version="${{ steps.get_version.outputs.VERSION }}" `
         --product-name="NBPxeServer" `
