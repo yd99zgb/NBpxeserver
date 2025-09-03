@@ -14,6 +14,7 @@ import functools
 import subprocess
 import queue
 import uuid
+import random  # --- [新增] --- 导入random模块用于生成随机超时
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 
@@ -106,14 +107,16 @@ def create_default_ini():
     config['BootFiles'] = {'bios': 'ipxe.bios', 'uefi32': 'ipxe32.efi', 'uefi64': 'ipxe.efi', 'ipxe': 'ipxeboot.txt'}
     config['SMB'] = {'enabled': 'false', 'share_name': 'pxe', 'permissions': 'read'}
     config['PXEMenuBIOS'] = {
-        'enabled': 'true', 'timeout': '10', 'prompt': 'BIOS Boot Menu',
+        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',  # --- [新增] ---
+        'prompt': 'BIOS Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (BIOS), ipxe.bios, 8000, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
     config['PXEMenuUEFI'] = {
-        'enabled': 'true', 'timeout': '10', 'prompt': 'UEFI Boot Menu',
+        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',  # --- [新增] ---
+        'prompt': 'UEFI Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (UEFI), ipxe.efi, 8002, {best_ip}
 Windows PE (UEFI), boot/bootmgfw.efi, 8003, {best_ip}
@@ -155,9 +158,13 @@ def load_config_from_ini():
             'bootfile_uefi32': b.get('uefi32'), 'bootfile_uefi64': b.get('uefi64'), 'bootfile_ipxe': b.get('ipxe'),
             'smb_enabled': s.getboolean('enabled'), 'smb_share_name': s.get('share_name'),
             'smb_permissions': s.get('permissions'), 'pxe_menu_bios_enabled': pm_bios.getboolean('enabled'),
-            'pxe_menu_bios_timeout': pm_bios.getint('timeout'), 'pxe_menu_bios_prompt': pm_bios.get('prompt'),
+            'pxe_menu_bios_timeout': pm_bios.getint('timeout'),
+            'pxe_menu_bios_randomize_timeout': pm_bios.getboolean('randomize_timeout', False),  # --- [新增] ---
+            'pxe_menu_bios_prompt': pm_bios.get('prompt'),
             'pxe_menu_bios_items': pm_bios.get('items'), 'pxe_menu_uefi_enabled': pm_uefi.getboolean('enabled'),
-            'pxe_menu_uefi_timeout': pm_uefi.getint('timeout'), 'pxe_menu_uefi_prompt': pm_uefi.get('prompt'),
+            'pxe_menu_uefi_timeout': pm_uefi.getint('timeout'),
+            'pxe_menu_uefi_randomize_timeout': pm_uefi.getboolean('randomize_timeout', False),  # --- [新增] ---
+            'pxe_menu_uefi_prompt': pm_uefi.get('prompt'),
             'pxe_menu_uefi_items': pm_uefi.get('items'),
             # --- [新增] --- 加载DHCP自定义选项的配置
             'dhcp_options_enabled': o.getboolean('enabled', False),
@@ -189,8 +196,10 @@ def save_config_to_ini():
         b['bios'], b['uefi32'], b['uefi64'], b['ipxe'] = SETTINGS['bootfile_bios'], SETTINGS['bootfile_uefi32'], SETTINGS['bootfile_uefi64'], SETTINGS['bootfile_ipxe']
         s['enabled'], s['share_name'], s['permissions'] = str(SETTINGS['smb_enabled']).lower(), SETTINGS['smb_share_name'], SETTINGS['smb_permissions']
         pm_bios['enabled'], pm_bios['timeout'] = str(SETTINGS['pxe_menu_bios_enabled']).lower(), str(SETTINGS['pxe_menu_bios_timeout'])
+        pm_bios['randomize_timeout'] = str(SETTINGS['pxe_menu_bios_randomize_timeout']).lower()  # --- [新增] ---
         pm_bios['prompt'], pm_bios['items'] = SETTINGS['pxe_menu_bios_prompt'], SETTINGS['pxe_menu_bios_items']
         pm_uefi['enabled'], pm_uefi['timeout'] = str(SETTINGS['pxe_menu_uefi_enabled']).lower(), str(SETTINGS['pxe_menu_uefi_timeout'])
+        pm_uefi['randomize_timeout'] = str(SETTINGS['pxe_menu_uefi_randomize_timeout']).lower()  # --- [新增] ---
         pm_uefi['prompt'], pm_uefi['items'] = SETTINGS['pxe_menu_uefi_prompt'], SETTINGS['pxe_menu_uefi_items']
         # --- [新增] --- 保存DHCP自定义选项的配置
         o['enabled'] = str(SETTINGS['dhcp_options_enabled']).lower()
@@ -245,7 +254,16 @@ def build_pxe_option43_menu(menu_cfg):
         desc = item['text'].encode('ascii', 'ignore')
         menu_val += item['type_bytes'] + bytes([len(desc)]) + desc
     payload += bytes([9, len(menu_val)]) + menu_val
-    timeout = max(0, min(255, menu_cfg.get('timeout', 10)))
+    
+    # --- [修改] --- 增加随机超时逻辑
+    max_timeout = menu_cfg.get('timeout', 10)
+    if menu_cfg.get('randomize_timeout', False):
+        timeout = random.randint(0, max_timeout)
+    else:
+        timeout = max_timeout
+    timeout = max(0, min(255, timeout))
+    # --- [修改结束] ---
+    
     prompt = menu_cfg.get('prompt', '').encode('ascii', 'ignore') + b'\x00'
     prompt_val = bytes([timeout]) + prompt
     payload += bytes([10, len(prompt_val)]) + prompt_val
@@ -314,12 +332,15 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
 
     elif menu_enabled and b'iPXE' not in opts.get(77, b''):
         is_menu_offer = True
+        # --- [修改] --- 将 randomize_timeout 配置传递给菜单构建函数
         menu_config = {
             'enabled': True, 'arch': arch_name.upper(),
             'timeout': cfg[f'{menu_cfg_key_prefix}_timeout'],
+            'randomize_timeout': cfg[f'{menu_cfg_key_prefix}_randomize_timeout'],
             'prompt': cfg[f'{menu_cfg_key_prefix}_prompt'],
             'items': cfg[f'{menu_cfg_key_prefix}_items']
         }
+        # --- [修改结束] ---
         option43 = build_pxe_option43_menu(menu_config)
         log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供PXE菜单")
     else:
@@ -854,9 +875,20 @@ class ConfigWindow(tk.Toplevel):
         ttk.Label(pxe_menu_frame, text="菜单提示文本:").grid(row=0, column=0, sticky="w", pady=5)
         self.settings_vars[prompt_key] = tk.StringVar(value=SETTINGS.get(prompt_key))
         ttk.Entry(pxe_menu_frame, textvariable=self.settings_vars[prompt_key]).grid(row=0, column=1, sticky="ew", pady=5)
+        
+        # --- [修改] --- 将超时输入框和随机化复选框放入一个Frame中
         ttk.Label(pxe_menu_frame, text="菜单超时 (秒):").grid(row=1, column=0, sticky="w", pady=5)
+        timeout_frame = ttk.Frame(pxe_menu_frame)
+        timeout_frame.grid(row=1, column=1, sticky="ew", pady=5)
+        
         self.settings_vars[timeout_key] = tk.IntVar(value=SETTINGS.get(timeout_key))
-        ttk.Entry(pxe_menu_frame, textvariable=self.settings_vars[timeout_key], width=10).grid(row=1, column=1, sticky="w", pady=5)
+        ttk.Entry(timeout_frame, textvariable=self.settings_vars[timeout_key], width=10).pack(side="left")
+        
+        randomize_key = f'pxe_menu_{arch_type}_randomize_timeout'
+        self.settings_vars[randomize_key] = tk.BooleanVar(value=SETTINGS.get(randomize_key))
+        ttk.Checkbutton(timeout_frame, text="客户机时间随机分配", variable=self.settings_vars[randomize_key]).pack(side="left", padx=(10, 0))
+        # --- [修改结束] ---
+        
         items_frame = ttk.LabelFrame(pxe_menu_frame, text="启动菜单项定义", padding=5)
         items_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(10,5))
         menu_items_text = scrolledtext.ScrolledText(items_frame, wrap=tk.WORD, height=10, width=60)
