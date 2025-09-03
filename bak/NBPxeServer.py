@@ -21,11 +21,6 @@ from collections import deque
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 
-# --- [新增] --- 导入新的DHCP选项处理模块和示例配置
-import option as dhcp_option_handler
-from option import EXAMPLE_OPTIONS
-# --- [新增结束] ---
-
 # ================================================================= #
 # ======================== 核心服务器逻辑 ========================= #
 # ================================================================= #
@@ -120,12 +115,6 @@ Windows PE (UEFI), boot/bootmgfw.efi, 8003, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
-    # --- [新增] --- 添加DHCP自定义选项的默认配置
-    config['DHCPOptions'] = {
-        'enabled': 'false',
-        'options_text': EXAMPLE_OPTIONS
-    }
-    # --- [新增结束] ---
     with open(INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
     log_message(f"默认配置文件 '{INI_FILENAME}' 已创建。")
 
@@ -137,11 +126,8 @@ def load_config_from_ini():
     except configparser.Error as e:
         log_message(f"配置文件 '{INI_FILENAME}' 解析失败: {e}", "ERROR"); return False
     try:
-        # --- [修改] --- 添加 o (options) 和 pm (pxe_menu) 变量
         g, d, fs, b, s = config['General'], config['DHCP'], config['FileServer'], config['BootFiles'], config['SMB']
         pm_bios, pm_uefi = config['PXEMenuBIOS'], config['PXEMenuUEFI']
-        o = config['DHCPOptions']
-        # --- [修改结束] ---
         SETTINGS = {
             'listen_ip': g.get('listen_ip', '0.0.0.0'), 'server_ip': g.get('server_ip', get_all_ips()[0]),
             'dhcp_enabled': d.getboolean('enabled', True), 'dhcp_mode': d.get('mode', 'proxy'),
@@ -159,25 +145,15 @@ def load_config_from_ini():
             'pxe_menu_bios_items': pm_bios.get('items'), 'pxe_menu_uefi_enabled': pm_uefi.getboolean('enabled'),
             'pxe_menu_uefi_timeout': pm_uefi.getint('timeout'), 'pxe_menu_uefi_prompt': pm_uefi.get('prompt'),
             'pxe_menu_uefi_items': pm_uefi.get('items'),
-            # --- [新增] --- 加载DHCP自定义选项的配置
-            'dhcp_options_enabled': o.getboolean('enabled', False),
-            'dhcp_options_text': o.get('options_text', ''),
-            # --- [新增结束] ---
         }
-        # --- [新增] --- 将加载后的全局配置传递给option模块
-        dhcp_option_handler.set_global_settings(SETTINGS)
-        # --- [新增结束] ---
         return True
     except (KeyError, ValueError) as e:
         log_message(f"读取配置文件时发生错误: {e}。请检查 '{INI_FILENAME}' 的格式。", "ERROR"); return False
 
 def save_config_to_ini():
     try:
-        # --- [修改] --- 添加 o (options) 变量
-        g, d, fs, b, s, pm_bios, pm_uefi, o = (config['General'], config['DHCP'], config['FileServer'],
-                                              config['BootFiles'], config['SMB'], config['PXEMenuBIOS'],
-                                              config['PXEMenuUEFI'], config['DHCPOptions'])
-        # --- [修改结束] ---
+        g, d, fs, b, s, pm_bios, pm_uefi = (config['General'], config['DHCP'], config['FileServer'],
+                                            config['BootFiles'], config['SMB'], config['PXEMenuBIOS'], config['PXEMenuUEFI'])
         g['listen_ip'], g['server_ip'] = SETTINGS['listen_ip'], SETTINGS['server_ip']
         d['enabled'], d['mode'] = str(SETTINGS['dhcp_enabled']).lower(), SETTINGS['dhcp_mode']
         d['pool_start'], d['pool_end'] = SETTINGS['ip_pool_start'], SETTINGS['ip_pool_end']
@@ -192,10 +168,6 @@ def save_config_to_ini():
         pm_bios['prompt'], pm_bios['items'] = SETTINGS['pxe_menu_bios_prompt'], SETTINGS['pxe_menu_bios_items']
         pm_uefi['enabled'], pm_uefi['timeout'] = str(SETTINGS['pxe_menu_uefi_enabled']).lower(), str(SETTINGS['pxe_menu_uefi_timeout'])
         pm_uefi['prompt'], pm_uefi['items'] = SETTINGS['pxe_menu_uefi_prompt'], SETTINGS['pxe_menu_uefi_items']
-        # --- [新增] --- 保存DHCP自定义选项的配置
-        o['enabled'] = str(SETTINGS['dhcp_options_enabled']).lower()
-        o['options_text'] = SETTINGS['dhcp_options_text']
-        # --- [新增结束] ---
         with open(INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
         log_message(f"配置已成功保存到 '{INI_FILENAME}'。")
     except Exception as e: log_message(f"保存配置文件时出错: {e}", "ERROR")
@@ -351,16 +323,6 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
         resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
         resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
-
-    # --- [新增] --- 添加处理和附加自定义DHCP选项的逻辑
-    if cfg.get('dhcp_options_enabled', False):
-        options_text = cfg.get('dhcp_options_text', '')
-        if options_text:
-            custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(options_text)
-            if custom_options_bytes:
-                resp_pkt += custom_options_bytes
-                log_message(f"DHCP: 已为 {client_mac} 添加 {len(custom_options_bytes)} 字节的自定义选项。")
-    # --- [新增结束] ---
 
     resp_pkt += b'\xff'
     return bytes(resp_pkt)
@@ -720,25 +682,16 @@ class ConfigWindow(tk.Toplevel):
         boot_files_frame = ttk.Frame(notebook, padding="10")
         pxe_bios_frame = ttk.Frame(notebook, padding="10")
         pxe_uefi_frame = ttk.Frame(notebook, padding="10")
-        # --- [新增] --- 创建用于DHCP自定义选项的Frame
-        dhcp_options_frame = ttk.Frame(notebook, padding="10")
-        # --- [新增结束] ---
         notebook.add(general_frame, text="常规/网络")
         notebook.add(path_frame, text="服务与路径")
         notebook.add(boot_files_frame, text="默认引导文件")
         notebook.add(pxe_bios_frame, text="PXE 菜单 (BIOS)")
         notebook.add(pxe_uefi_frame, text="PXE 菜单 (UEFI)")
-        # --- [新增] --- 将新的Frame添加到Notebook中
-        notebook.add(dhcp_options_frame, text="DHCP 自定义选项")
-        # --- [新增结束] ---
         self.create_general_tab(general_frame)
         self.create_path_tab(path_frame)
         self.create_boot_files_tab(boot_files_frame)
         self.create_pxe_menu_tab(pxe_bios_frame, 'bios')
         self.create_pxe_menu_tab(pxe_uefi_frame, 'uefi')
-        # --- [新增] --- 调用函数创建新选项卡的内容
-        dhcp_option_handler.create_dhcp_options_tab(dhcp_options_frame, self.settings_vars, SETTINGS)
-        # --- [新增结束] ---
         button_frame = ttk.Frame(self)
         button_frame.pack(pady=5, padx=10, fill='x')
         ttk.Button(button_frame, text="保存并关闭", command=self.save_and_close).pack(side="right", padx=5)
