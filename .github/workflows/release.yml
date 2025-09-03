@@ -40,7 +40,7 @@ jobs:
       run: |
         python -m nuitka --onefile --windows-console-mode=disable --enable-plugin=tk-inter `
         --windows-uac-admin `
-        --yes-to-all `
+        
         --output-dir=dist `
         --output-filename=${{ matrix.output-name }} `
         --windows-icon-from-ico=icon.ico `
