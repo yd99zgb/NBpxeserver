@@ -51,7 +51,7 @@ jobs:
       run: |
         python -m nuitka --standalone --onefile --windows-console-mode=disable --windows-icon-from-ico=icon.ico `
         --enable-plugin=tk-inter `
-        --accept-all-yes `
+        --yes-to-all `
         --file-version="${{ steps.get_version.outputs.VERSION }}" `
         --product-version="${{ steps.get_version.outputs.VERSION }}" `
         --product-name="NBPxeServer" `
