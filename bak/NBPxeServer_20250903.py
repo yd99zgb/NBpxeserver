@@ -14,7 +14,7 @@ import functools
 import subprocess
 import queue
 import uuid
-import random
+import random  # --- [新增] --- 导入random模块用于生成随机超时
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 
@@ -22,8 +22,10 @@ from collections import deque
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 
+# --- [新增] --- 导入新的DHCP选项处理模块和示例配置
 import option as dhcp_option_handler
 from option import EXAMPLE_OPTIONS
+# --- [新增结束] ---
 
 # ================================================================= #
 # ======================== 核心服务器逻辑 ========================= #
@@ -105,7 +107,7 @@ def create_default_ini():
     config['BootFiles'] = {'bios': 'ipxe.bios', 'uefi32': 'ipxe32.efi', 'uefi64': 'ipxe.efi', 'ipxe': 'ipxeboot.txt'}
     config['SMB'] = {'enabled': 'false', 'share_name': 'pxe', 'permissions': 'read'}
     config['PXEMenuBIOS'] = {
-        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
+        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',  # --- [新增] ---
         'prompt': 'BIOS Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (BIOS), ipxe.bios, 8000, {best_ip}
@@ -113,7 +115,7 @@ Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
     config['PXEMenuUEFI'] = {
-        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
+        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',  # --- [新增] ---
         'prompt': 'UEFI Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (UEFI), ipxe.efi, 8002, {best_ip}
@@ -121,10 +123,12 @@ Windows PE (UEFI), boot/bootmgfw.efi, 8003, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
+    # --- [新增] --- 添加DHCP自定义选项的默认配置
     config['DHCPOptions'] = {
         'enabled': 'false',
         'options_text': EXAMPLE_OPTIONS
     }
+    # --- [新增结束] ---
     with open(INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
     log_message(f"默认配置文件 '{INI_FILENAME}' 已创建。")
 
@@ -136,9 +140,11 @@ def load_config_from_ini():
     except configparser.Error as e:
         log_message(f"配置文件 '{INI_FILENAME}' 解析失败: {e}", "ERROR"); return False
     try:
+        # --- [修改] --- 添加 o (options) 和 pm (pxe_menu) 变量
         g, d, fs, b, s = config['General'], config['DHCP'], config['FileServer'], config['BootFiles'], config['SMB']
         pm_bios, pm_uefi = config['PXEMenuBIOS'], config['PXEMenuUEFI']
         o = config['DHCPOptions']
+        # --- [修改结束] ---
         SETTINGS = {
             'listen_ip': g.get('listen_ip', '0.0.0.0'), 'server_ip': g.get('server_ip', get_all_ips()[0]),
             'dhcp_enabled': d.getboolean('enabled', True), 'dhcp_mode': d.get('mode', 'proxy'),
@@ -153,26 +159,32 @@ def load_config_from_ini():
             'smb_enabled': s.getboolean('enabled'), 'smb_share_name': s.get('share_name'),
             'smb_permissions': s.get('permissions'), 'pxe_menu_bios_enabled': pm_bios.getboolean('enabled'),
             'pxe_menu_bios_timeout': pm_bios.getint('timeout'),
-            'pxe_menu_bios_randomize_timeout': pm_bios.getboolean('randomize_timeout', False),
+            'pxe_menu_bios_randomize_timeout': pm_bios.getboolean('randomize_timeout', False),  # --- [新增] ---
             'pxe_menu_bios_prompt': pm_bios.get('prompt'),
             'pxe_menu_bios_items': pm_bios.get('items'), 'pxe_menu_uefi_enabled': pm_uefi.getboolean('enabled'),
             'pxe_menu_uefi_timeout': pm_uefi.getint('timeout'),
-            'pxe_menu_uefi_randomize_timeout': pm_uefi.getboolean('randomize_timeout', False),
+            'pxe_menu_uefi_randomize_timeout': pm_uefi.getboolean('randomize_timeout', False),  # --- [新增] ---
             'pxe_menu_uefi_prompt': pm_uefi.get('prompt'),
             'pxe_menu_uefi_items': pm_uefi.get('items'),
+            # --- [新增] --- 加载DHCP自定义选项的配置
             'dhcp_options_enabled': o.getboolean('enabled', False),
             'dhcp_options_text': o.get('options_text', ''),
+            # --- [新增结束] ---
         }
+        # --- [新增] --- 将加载后的全局配置传递给option模块
         dhcp_option_handler.set_global_settings(SETTINGS)
+        # --- [新增结束] ---
         return True
     except (KeyError, ValueError) as e:
         log_message(f"读取配置文件时发生错误: {e}。请检查 '{INI_FILENAME}' 的格式。", "ERROR"); return False
 
 def save_config_to_ini():
     try:
+        # --- [修改] --- 添加 o (options) 变量
         g, d, fs, b, s, pm_bios, pm_uefi, o = (config['General'], config['DHCP'], config['FileServer'],
                                               config['BootFiles'], config['SMB'], config['PXEMenuBIOS'],
                                               config['PXEMenuUEFI'], config['DHCPOptions'])
+        # --- [修改结束] ---
         g['listen_ip'], g['server_ip'] = SETTINGS['listen_ip'], SETTINGS['server_ip']
         d['enabled'], d['mode'] = str(SETTINGS['dhcp_enabled']).lower(), SETTINGS['dhcp_mode']
         d['pool_start'], d['pool_end'] = SETTINGS['ip_pool_start'], SETTINGS['ip_pool_end']
@@ -184,13 +196,15 @@ def save_config_to_ini():
         b['bios'], b['uefi32'], b['uefi64'], b['ipxe'] = SETTINGS['bootfile_bios'], SETTINGS['bootfile_uefi32'], SETTINGS['bootfile_uefi64'], SETTINGS['bootfile_ipxe']
         s['enabled'], s['share_name'], s['permissions'] = str(SETTINGS['smb_enabled']).lower(), SETTINGS['smb_share_name'], SETTINGS['smb_permissions']
         pm_bios['enabled'], pm_bios['timeout'] = str(SETTINGS['pxe_menu_bios_enabled']).lower(), str(SETTINGS['pxe_menu_bios_timeout'])
-        pm_bios['randomize_timeout'] = str(SETTINGS['pxe_menu_bios_randomize_timeout']).lower()
+        pm_bios['randomize_timeout'] = str(SETTINGS['pxe_menu_bios_randomize_timeout']).lower()  # --- [新增] ---
         pm_bios['prompt'], pm_bios['items'] = SETTINGS['pxe_menu_bios_prompt'], SETTINGS['pxe_menu_bios_items']
         pm_uefi['enabled'], pm_uefi['timeout'] = str(SETTINGS['pxe_menu_uefi_enabled']).lower(), str(SETTINGS['pxe_menu_uefi_timeout'])
-        pm_uefi['randomize_timeout'] = str(SETTINGS['pxe_menu_uefi_randomize_timeout']).lower()
+        pm_uefi['randomize_timeout'] = str(SETTINGS['pxe_menu_uefi_randomize_timeout']).lower()  # --- [新增] ---
         pm_uefi['prompt'], pm_uefi['items'] = SETTINGS['pxe_menu_uefi_prompt'], SETTINGS['pxe_menu_uefi_items']
+        # --- [新增] --- 保存DHCP自定义选项的配置
         o['enabled'] = str(SETTINGS['dhcp_options_enabled']).lower()
         o['options_text'] = SETTINGS['dhcp_options_text']
+        # --- [新增结束] ---
         with open(INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
         log_message(f"配置已成功保存到 '{INI_FILENAME}'。")
     except Exception as e: log_message(f"保存配置文件时出错: {e}", "ERROR")
@@ -240,12 +254,16 @@ def build_pxe_option43_menu(menu_cfg):
         desc = item['text'].encode('ascii', 'ignore')
         menu_val += item['type_bytes'] + bytes([len(desc)]) + desc
     payload += bytes([9, len(menu_val)]) + menu_val
+    
+    # --- [修改] --- 增加随机超时逻辑
     max_timeout = menu_cfg.get('timeout', 10)
     if menu_cfg.get('randomize_timeout', False):
         timeout = random.randint(0, max_timeout)
     else:
         timeout = max_timeout
     timeout = max(0, min(255, timeout))
+    # --- [修改结束] ---
+    
     prompt = menu_cfg.get('prompt', '').encode('ascii', 'ignore') + b'\x00'
     prompt_val = bytes([timeout]) + prompt
     payload += bytes([10, len(prompt_val)]) + prompt_val
@@ -269,10 +287,13 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
 
     menu_cfg_key_prefix = 'pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios'
     menu_enabled = cfg.get(f'{menu_cfg_key_prefix}_enabled', False)
+    
     final_server_ip = cfg['server_ip']
+    
     boot_file = ""
     option43 = b''
     is_menu_offer = False
+    
     selected_item_type = None
     selected_item_layer = 0
     if 43 in opts:
@@ -286,6 +307,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                 selected_item_layer = struct.unpack('!H', pxe_opts[i+4:i+6])[0] if sub_len >= 4 else 0
                 break
             i += 2 + sub_len
+    
     if selected_item_type is not None:
         menu_items_str = cfg.get(f'{menu_cfg_key_prefix}_items', '')
         for line in menu_items_str.strip().splitlines():
@@ -301,6 +323,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                         break
                 except ValueError: continue
         log_message(f"DHCP: 客户端 {client_mac} 已选择菜单项 {selected_item_type:04x}, 提供文件: '{boot_file or '本地启动'}' an Server: {final_server_ip}")
+        
         option43_ack_payload = bytearray()
         boot_item_val = selected_item_type.to_bytes(2, 'big') + selected_item_layer.to_bytes(2, 'big')
         option43_ack_payload += bytes([71, len(boot_item_val)]) + boot_item_val
@@ -309,6 +332,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
 
     elif menu_enabled and b'iPXE' not in opts.get(77, b''):
         is_menu_offer = True
+        # --- [修改] --- 将 randomize_timeout 配置传递给菜单构建函数
         menu_config = {
             'enabled': True, 'arch': arch_name.upper(),
             'timeout': cfg[f'{menu_cfg_key_prefix}_timeout'],
@@ -316,6 +340,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
             'prompt': cfg[f'{menu_cfg_key_prefix}_prompt'],
             'items': cfg[f'{menu_cfg_key_prefix}_items']
         }
+        # --- [修改结束] ---
         option43 = build_pxe_option43_menu(menu_config)
         log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供PXE菜单")
     else:
@@ -326,11 +351,13 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     if resp_msg_type == 0: return None
 
     resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
-    resp_pkt += req_pkt[12:16]
-    resp_pkt += socket.inet_aton(assigned_ip)
+    resp_pkt += req_pkt[12:16] # ciaddr
+    resp_pkt += socket.inet_aton(assigned_ip) # yiaddr
+    
     final_server_ip_bytes = socket.inet_aton(final_server_ip)
     siaddr = b'\x00\x00\x00\x00' if is_menu_offer else final_server_ip_bytes
     resp_pkt += siaddr
+    
     resp_pkt += req_pkt[24:28] + chaddr + (b'\x00' * 64)
     file_bytes = boot_file.encode('ascii', 'ignore')
     resp_pkt += file_bytes + b'\x00' * (128 - len(file_bytes))
@@ -346,6 +373,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
         resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
 
+    # --- [新增] --- 添加处理和附加自定义DHCP选项的逻辑
     if cfg.get('dhcp_options_enabled', False):
         options_text = cfg.get('dhcp_options_text', '')
         if options_text:
@@ -353,6 +381,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
             if custom_options_bytes:
                 resp_pkt += custom_options_bytes
                 log_message(f"DHCP: 已为 {client_mac} 添加 {len(custom_options_bytes)} 字节的自定义选项。")
+    # --- [新增结束] ---
 
     resp_pkt += b'\xff'
     return bytes(resp_pkt)
@@ -360,47 +389,57 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
 dhcp_thread, proxy_thread, tftp_thread, http_thread, dhcp_detector_thread = None, None, None, None, None
 stop_event = threading.Event()
 
+# HINZUGEFÜGT/GEÄNDERT: Funktion zur Erkennung anderer DHCP-Server (mit chinesischen Logs und verbesserter Logik)
 def detect_other_dhcp_servers(stop_evt):
     log_message("DHCP探测器: 开始扫描局域网中的其它DHCP服务器(持续15秒)...")
     listen_ip = SETTINGS.get('listen_ip', '0.0.0.0')
     server_ip = SETTINGS.get('server_ip')
     bind_ip = listen_ip if listen_ip != '0.0.0.0' else ''
-    discover_pkt = bytearray(b'\x01\x01\x06\x00')
-    discover_pkt += os.urandom(4)
-    discover_pkt += b'\x00\x00\x80\x00'
-    discover_pkt += b'\x00' * 16
-    discover_pkt += b'\x00\x11\x22\x33\x44\x55' + b'\x00'*10
-    discover_pkt += b'\x00' * 192
-    discover_pkt += b'\x63\x82\x53\x63'
-    discover_pkt += b'\x35\x01\x01'
-    discover_pkt += b'\x37\x05\x01\x03\x06\x0c\x0f'
-    discover_pkt += b'\x0c\x08NBPXE-Scan'
-    discover_pkt += b'\xff'
+
+    # [DHCP DISCOVERY PACKET FIX] 使用一个更健壮和标准的包结构
+    discover_pkt = bytearray(b'\x01\x01\x06\x00')       # Op, HType, HLen, Hops
+    discover_pkt += os.urandom(4)                       # XID (Transaction ID)
+    discover_pkt += b'\x00\x00\x80\x00'                 # Secs, Flags (Broadcast)
+    discover_pkt += b'\x00' * 16                        # ciaddr, yiaddr, siaddr, giaddr
+    discover_pkt += b'\x00\x11\x22\x33\x44\x55' + b'\x00'*10 # chaddr (伪造一个通用MAC地址)
+    discover_pkt += b'\x00' * 192                       # sname, file
+    discover_pkt += b'\x63\x82\x53\x63'                 # Magic cookie
+    # --- Options ---
+    discover_pkt += b'\x35\x01\x01'                     # Option 53: Discover
+    discover_pkt += b'\x37\x05\x01\x03\x06\x0c\x0f'     # Option 55: Parameter Request List (请求标准选项)
+    discover_pkt += b'\x0c\x08NBPXE-Scan'               # Option 12: Host Name
+    discover_pkt += b'\xff'                             # End
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    
     try:
         sock.bind((bind_ip, 68))
     except Exception as e:
         log_message(f"DHCP探测器: 无法绑定到端口68进行检测: {e}", "ERROR")
         sock.close()
         return
+        
     start_time = time.time()
     found_server = False
+
     try:
         while not stop_evt.is_set() and time.time() - start_time < 15 and not found_server:
             log_message("DHCP探测器: 正在发送DHCPDISCOVER广播包...")
             sock.sendto(discover_pkt, ('255.255.255.255', 67))
+            
             listen_start_time = time.time()
             detected_servers = set()
-            while time.time() - listen_start_time < 3:
+            
+            while time.time() - listen_start_time < 3: # 在每次发送后监听3秒
                 if stop_evt.is_set(): break
                 try:
                     sock.settimeout(1.0)
                     data, _ = sock.recvfrom(1024)
                     if len(data) > 240:
                         opts = parse_dhcp_options(data)
-                        if opts.get(53) == b'\x02':
+                        if opts.get(53) == b'\x02': # DHCPOFFER
                             server_id_bytes = opts.get(54)
                             if server_id_bytes:
                                 server_id = socket.inet_ntoa(server_id_bytes)
@@ -410,13 +449,16 @@ def detect_other_dhcp_servers(stop_evt):
                     continue
                 except Exception as e:
                     log_message(f"DHCP探测器: 接收探测响应时出错: {e}", "ERROR")
+            
             if detected_servers:
                 for srv_ip in detected_servers:
                     log_message(f"警告: 在局域网中发现另一个DHCP服务器, 地址为 {srv_ip}！", "WARNING")
                 log_message("建议: 为避免IP地址冲突, 请在本软件中使用“代理(Proxy)”模式, 或停用网络中的其它DHCP服务器。", "WARNING")
                 found_server = True
+            
             if not found_server and not stop_evt.is_set():
-                time.sleep(2)
+                time.sleep(2) # 在下一次探测前等待2秒
+
     finally:
         if not found_server and not stop_evt.is_set():
             log_message("DHCP探测器: 扫描结束, 未发现其它DHCP服务器。")
@@ -500,116 +542,56 @@ def run_tftp_server(cfg, stop_evt):
     use_multithread = cfg.get('tftp_multithread', True)
     executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='TFTP') if use_multithread else None
     log_message(f"TFTP: 服务器已在 {cfg['listen_ip']}:69 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: '{tftp_root}')")
-    
     def handle_request(initial_data, client_addr):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
             tsock.settimeout(5)
             try:
                 if len(initial_data) < 4: return
                 opcode = struct.unpack('!H', initial_data[:2])[0]
-                if opcode == 1: # Opcode 1: Read Request (RRQ)
+                if opcode == 1:
                     parts = initial_data[2:].split(b'\x00')
-                    filename = parts[0].decode('ascii', errors='ignore').replace('\\', '/').lstrip('/')
+                    filename = parts[0].decode('ascii', errors='ignore').replace('\\', '/')
                     filepath = os.path.realpath(os.path.join(tftp_root, filename))
-                    
                     if not filepath.startswith(tftp_root) or not os.path.isfile(filepath):
-                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法或不存在的文件 '{filename}'", "WARNING")
-                        tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', client_addr); return
-                    
+                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法文件 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HHB', 5, 1, 0), client_addr); return
                     log_message(f"TFTP: [GET] {client_addr} 请求 '{filename}'")
-                    
                     blksize = 512
-                    
-                    # --- [FINAL FIX START] ---
-                    # Strict option negotiation logic.
                     if len(parts) > 3 and parts[1].lower() == b'octet':
                         options = {parts[i].lower(): parts[i+1] for i in range(2, len(parts) - 1, 2)}
-                        oack_parts = []
-
-                        # Acknowledge blksize ONLY IF the client requested it.
+                        oack_pkt = bytearray(struct.pack('!H', 6))
                         if b'blksize' in options:
-                            try:
-                                requested_blksize = int(options[b'blksize'])
-                                blksize = max(512, min(requested_blksize, 1456))
-                                oack_parts.append(b'blksize\x00' + str(blksize).encode() + b'\x00')
-                            except (ValueError, IndexError):
-                                pass # Client sent garbage, ignore blksize.
-                        
-                        # Acknowledge tsize ONLY IF the client requested it.
-                        if b'tsize' in options:
-                            try:
-                                file_size_str = str(os.path.getsize(filepath)).encode()
-                                oack_parts.append(b'tsize\x00' + file_size_str + b'\x00')
-                            except OSError as e:
-                                log_message(f"TFTP: 无法获取文件大小 '{filename}': {e}", "ERROR")
-                                tsock.sendto(struct.pack('!HH', 5, 0) + b'File access error\x00', client_addr); return
-
-                        # If we have anything to acknowledge, send OACK.
-                        if oack_parts:
-                            oack_pkt = bytearray(struct.pack('!H', 6)) # Opcode 6 = OACK
-                            for part in oack_parts: oack_pkt.extend(part)
-                            tsock.sendto(oack_pkt, client_addr)
-                            
-                            try:
-                                ack_data, _ = tsock.recvfrom(4)
-                                if len(ack_data) < 4 or struct.unpack('!HH', ack_data) != (4, 0):
-                                    log_message(f"TFTP: 从 {client_addr} 收到的 OACK 确认包无效, 协商失败。", "WARNING"); return
-                            except socket.timeout:
-                                log_message(f"TFTP: 等待来自 {client_addr} 的 OACK 确认包超时", "WARNING"); return
-                    # --- [FINAL FIX END] ---
-                    
+                            blksize = max(512, min(int(options[b'blksize']), 1468))
+                            oack_pkt += b'blksize\x00' + str(blksize).encode() + b'\x00'
+                        if b'tsize' in options: oack_pkt += b'tsize\x00' + str(os.path.getsize(filepath)).encode() + b'\x00'
+                        tsock.sendto(oack_pkt, client_addr)
+                        if struct.unpack('!HH', tsock.recvfrom(512)[0][:4]) != (4, 0): return
                     with open(filepath, 'rb') as f:
                         block_num = 1
                         while not stop_evt.is_set():
-                            chunk = f.read(blksize)
-                            data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            chunk = f.read(blksize); data_pkt = struct.pack('!HH', 3, block_num) + chunk
                             for _ in range(5):
                                 if stop_evt.is_set(): return
+                                tsock.sendto(data_pkt, client_addr)
                                 try:
-                                    tsock.sendto(data_pkt, client_addr)
-                                    ack_data, _ = tsock.recvfrom(4)
-                                    if len(ack_data) >= 4 and struct.unpack('!HH', ack_data[:4]) == (4, block_num):
-                                        break
-                                # --- Gracefully handle WinError 10040 ---
-                                except socket.error as e:
-                                    if hasattr(e, 'winerror') and e.winerror == 10040:
-                                        log_message(f"TFTP: 数据包(块 {block_num})对 {client_addr} 过大, 等待客户端超时重传。", "WARNING")
-                                        # Client will timeout and re-request ACK for this block. Just wait.
-                                        time.sleep(0.5)
-                                        continue
-                                    else:
-                                        raise # Re-raise other socket errors
-                                except socket.timeout:
-                                    continue
-                            else:
-                                log_message(f"TFTP: [超时] 等待 {client_addr} 对块 {block_num} 的ACK", "WARNING"); return
-                            
-                            if len(chunk) < blksize:
-                                log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成。")
-                                break
+                                    ack_data, client_addr = tsock.recvfrom(4)
+                                    if struct.unpack('!HH', ack_data) == (4, block_num): break
+                                except socket.timeout: continue
+                            else: log_message(f"TFTP: [超时] 等待 {client_addr} 对块 {block_num} 的ACK", "WARNING"); return
+                            if len(chunk) < blksize: log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成。"); break
                             block_num = (block_num + 1) % 65536
-
-                elif opcode == 2:
-                    log_message(f"TFTP: [拒绝] {client_addr} 的写入请求 (不支持)", "WARNING")
-                    tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr)
-
-            except Exception as e:
-                log_message(f"TFTP: 处理线程中发生错误: {e}", "ERROR")
-
+                elif opcode == 2: tsock.sendto(struct.pack('!HHB', 5, 4, 0), client_addr)
+            except Exception as e: log_message(f"TFTP: 处理线程中发生错误: {e}", "ERROR")
     try:
         while not stop_evt.is_set():
             try:
                 data, addr = sock.recvfrom(1500)
-                if use_multithread and executor:
-                    executor.submit(handle_request, data, addr)
-                else:
-                    threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
-            except socket.timeout:
-                continue
+                if use_multithread and executor: executor.submit(handle_request, data, addr)
+                else: threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
+            except socket.timeout: continue
     finally:
         if executor: executor.shutdown(wait=False)
-        sock.close()
-        log_message("TFTP: 服务器已停止。")
+        sock.close(); log_message("TFTP: 服务器已停止。")
 
 class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
@@ -759,19 +741,25 @@ class ConfigWindow(tk.Toplevel):
         boot_files_frame = ttk.Frame(notebook, padding="10")
         pxe_bios_frame = ttk.Frame(notebook, padding="10")
         pxe_uefi_frame = ttk.Frame(notebook, padding="10")
+        # --- [新增] --- 创建用于DHCP自定义选项的Frame
         dhcp_options_frame = ttk.Frame(notebook, padding="10")
+        # --- [新增结束] ---
         notebook.add(general_frame, text="常规/网络")
         notebook.add(path_frame, text="服务与路径")
         notebook.add(boot_files_frame, text="默认引导文件")
         notebook.add(pxe_bios_frame, text="PXE 菜单 (BIOS)")
         notebook.add(pxe_uefi_frame, text="PXE 菜单 (UEFI)")
+        # --- [新增] --- 将新的Frame添加到Notebook中
         notebook.add(dhcp_options_frame, text="DHCP 自定义选项")
+        # --- [新增结束] ---
         self.create_general_tab(general_frame)
         self.create_path_tab(path_frame)
         self.create_boot_files_tab(boot_files_frame)
         self.create_pxe_menu_tab(pxe_bios_frame, 'bios')
         self.create_pxe_menu_tab(pxe_uefi_frame, 'uefi')
+        # --- [新增] --- 调用函数创建新选项卡的内容
         dhcp_option_handler.create_dhcp_options_tab(dhcp_options_frame, self.settings_vars, SETTINGS)
+        # --- [新增结束] ---
         button_frame = ttk.Frame(self)
         button_frame.pack(pady=5, padx=10, fill='x')
         ttk.Button(button_frame, text="保存并关闭", command=self.save_and_close).pack(side="right", padx=5)
@@ -821,9 +809,9 @@ class ConfigWindow(tk.Toplevel):
             directory = filedialog.askdirectory()
             if directory: path_var.set(os.path.normpath(directory))
         def set_all_paths():
-            self.settings_vars['tftp_root'].set('.\\')
-            self.settings_vars['http_root'].set('.\\')
-            self.settings_vars['smb_root'].set('.\\')
+            self.settings_vars['tftp_root'].set('.\\tftp_root')
+            self.settings_vars['http_root'].set('.\\tftp_root')
+            self.settings_vars['smb_root'].set('.\\tftp_root')
         tftp_frame = ttk.Frame(parent)
         tftp_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.settings_vars['tftp_enabled'] = tk.BooleanVar(value=SETTINGS.get('tftp_enabled'))
@@ -863,7 +851,7 @@ class ConfigWindow(tk.Toplevel):
         ttk.Entry(parent, textvariable=self.settings_vars['smb_root']).grid(row=10, column=1, sticky="ew", pady=5)
         ttk.Button(parent, text="浏览...", command=lambda: browse_directory(self.settings_vars['smb_root'])).grid(row=10, column=2, padx=5, pady=5)
         ttk.Separator(parent).grid(row=11, columnspan=3, sticky='ew', pady=15)
-        ttk.Button(parent, text="一键设置为当前目录", command=set_all_paths).grid(row=12, column=1, sticky="w", pady=10)
+        ttk.Button(parent, text="一键设置为tftp_root目录", command=set_all_paths).grid(row=12, column=1, sticky="w", pady=10)
 
     def create_boot_files_tab(self, parent):
         parent.columnconfigure(1, weight=1)
@@ -887,14 +875,20 @@ class ConfigWindow(tk.Toplevel):
         ttk.Label(pxe_menu_frame, text="菜单提示文本:").grid(row=0, column=0, sticky="w", pady=5)
         self.settings_vars[prompt_key] = tk.StringVar(value=SETTINGS.get(prompt_key))
         ttk.Entry(pxe_menu_frame, textvariable=self.settings_vars[prompt_key]).grid(row=0, column=1, sticky="ew", pady=5)
+        
+        # --- [修改] --- 将超时输入框和随机化复选框放入一个Frame中
         ttk.Label(pxe_menu_frame, text="菜单超时 (秒):").grid(row=1, column=0, sticky="w", pady=5)
         timeout_frame = ttk.Frame(pxe_menu_frame)
         timeout_frame.grid(row=1, column=1, sticky="ew", pady=5)
+        
         self.settings_vars[timeout_key] = tk.IntVar(value=SETTINGS.get(timeout_key))
         ttk.Entry(timeout_frame, textvariable=self.settings_vars[timeout_key], width=10).pack(side="left")
+        
         randomize_key = f'pxe_menu_{arch_type}_randomize_timeout'
         self.settings_vars[randomize_key] = tk.BooleanVar(value=SETTINGS.get(randomize_key))
         ttk.Checkbutton(timeout_frame, text="客户机时间随机分配", variable=self.settings_vars[randomize_key]).pack(side="left", padx=(10, 0))
+        # --- [修改结束] ---
+        
         items_frame = ttk.LabelFrame(pxe_menu_frame, text="启动菜单项定义", padding=5)
         items_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(10,5))
         menu_items_text = scrolledtext.ScrolledText(items_frame, wrap=tk.WORD, height=10, width=60)
@@ -944,7 +938,7 @@ class NBpxeApp:
         self.create_status_widgets(status_frame)
         log_frame = ttk.LabelFrame(main_frame, text="实时日志", padding="10"); log_frame.pack(fill="both", expand=True, pady=5)
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=10); self.log_text.pack(fill="both", expand=True)
-        self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
+        self.log_text.tag_config('warning', foreground='red', font=('Helvetica', 9, 'bold'))
         self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
         control_frame = ttk.Frame(main_frame, padding="5"); control_frame.pack(fill="x")
         self.create_control_widgets(control_frame)
