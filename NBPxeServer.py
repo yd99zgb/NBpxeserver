@@ -503,6 +503,9 @@ def run_tftp_server(cfg, stop_evt):
     
     def handle_request(initial_data, client_addr):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
+            # --- [最终修复] ---
+            # 增大Socket接收缓冲区, 防止因ACK包被系统丢弃而导致不必要的重传, 这是WinError 10040的根源.
+            tsock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
             tsock.settimeout(5)
             try:
                 if len(initial_data) < 4: return
@@ -520,22 +523,18 @@ def run_tftp_server(cfg, stop_evt):
                     
                     blksize = 512
                     
-                    # --- [FINAL FIX START] ---
-                    # Strict option negotiation logic.
                     if len(parts) > 3 and parts[1].lower() == b'octet':
                         options = {parts[i].lower(): parts[i+1] for i in range(2, len(parts) - 1, 2)}
                         oack_parts = []
 
-                        # Acknowledge blksize ONLY IF the client requested it.
                         if b'blksize' in options:
                             try:
                                 requested_blksize = int(options[b'blksize'])
                                 blksize = max(512, min(requested_blksize, 1456))
                                 oack_parts.append(b'blksize\x00' + str(blksize).encode() + b'\x00')
                             except (ValueError, IndexError):
-                                pass # Client sent garbage, ignore blksize.
+                                pass
                         
-                        # Acknowledge tsize ONLY IF the client requested it.
                         if b'tsize' in options:
                             try:
                                 file_size_str = str(os.path.getsize(filepath)).encode()
@@ -544,9 +543,8 @@ def run_tftp_server(cfg, stop_evt):
                                 log_message(f"TFTP: 无法获取文件大小 '{filename}': {e}", "ERROR")
                                 tsock.sendto(struct.pack('!HH', 5, 0) + b'File access error\x00', client_addr); return
 
-                        # If we have anything to acknowledge, send OACK.
                         if oack_parts:
-                            oack_pkt = bytearray(struct.pack('!H', 6)) # Opcode 6 = OACK
+                            oack_pkt = bytearray(struct.pack('!H', 6))
                             for part in oack_parts: oack_pkt.extend(part)
                             tsock.sendto(oack_pkt, client_addr)
                             
@@ -556,7 +554,6 @@ def run_tftp_server(cfg, stop_evt):
                                     log_message(f"TFTP: 从 {client_addr} 收到的 OACK 确认包无效, 协商失败。", "WARNING"); return
                             except socket.timeout:
                                 log_message(f"TFTP: 等待来自 {client_addr} 的 OACK 确认包超时", "WARNING"); return
-                    # --- [FINAL FIX END] ---
                     
                     with open(filepath, 'rb') as f:
                         block_num = 1
@@ -565,20 +562,11 @@ def run_tftp_server(cfg, stop_evt):
                             data_pkt = struct.pack('!HH', 3, block_num) + chunk
                             for _ in range(5):
                                 if stop_evt.is_set(): return
+                                tsock.sendto(data_pkt, client_addr)
                                 try:
-                                    tsock.sendto(data_pkt, client_addr)
                                     ack_data, _ = tsock.recvfrom(4)
                                     if len(ack_data) >= 4 and struct.unpack('!HH', ack_data[:4]) == (4, block_num):
                                         break
-                                # --- Gracefully handle WinError 10040 ---
-                                except socket.error as e:
-                                    if hasattr(e, 'winerror') and e.winerror == 10040:
-                                        log_message(f"TFTP: 数据包(块 {block_num})对 {client_addr} 过大, 等待客户端超时重传。", "WARNING")
-                                        # Client will timeout and re-request ACK for this block. Just wait.
-                                        time.sleep(0.5)
-                                        continue
-                                    else:
-                                        raise # Re-raise other socket errors
                                 except socket.timeout:
                                     continue
                             else:
@@ -820,10 +808,15 @@ class ConfigWindow(tk.Toplevel):
         def browse_directory(path_var):
             directory = filedialog.askdirectory()
             if directory: path_var.set(os.path.normpath(directory))
+        
+        # --- [MODIFIED FUNCTION] ---
         def set_all_paths():
-            self.settings_vars['tftp_root'].set('.\\')
-            self.settings_vars['http_root'].set('.\\')
-            self.settings_vars['smb_root'].set('.\\')
+            # Set all paths to '.', which represents the current working directory.
+            self.settings_vars['tftp_root'].set('.')
+            self.settings_vars['http_root'].set('.')
+            self.settings_vars['smb_root'].set('.')
+        # --- [END MODIFICATION] ---
+
         tftp_frame = ttk.Frame(parent)
         tftp_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.settings_vars['tftp_enabled'] = tk.BooleanVar(value=SETTINGS.get('tftp_enabled'))
@@ -863,7 +856,10 @@ class ConfigWindow(tk.Toplevel):
         ttk.Entry(parent, textvariable=self.settings_vars['smb_root']).grid(row=10, column=1, sticky="ew", pady=5)
         ttk.Button(parent, text="浏览...", command=lambda: browse_directory(self.settings_vars['smb_root'])).grid(row=10, column=2, padx=5, pady=5)
         ttk.Separator(parent).grid(row=11, columnspan=3, sticky='ew', pady=15)
+        
+        # --- [MODIFIED BUTTON TEXT] ---
         ttk.Button(parent, text="一键设置为当前目录", command=set_all_paths).grid(row=12, column=1, sticky="w", pady=10)
+        # --- [END MODIFICATION] ---
 
     def create_boot_files_tab(self, parent):
         parent.columnconfigure(1, weight=1)
@@ -938,7 +934,7 @@ class ConfigWindow(tk.Toplevel):
 
 class NBpxeApp:
     def __init__(self, root):
-        self.root = root; self.root.title("NBPXE 服务器 20250901"); self.root.geometry("700x430")
+        self.root = root; self.root.title("NBPXE 服务器 20250905"); self.root.geometry("700x430")
         main_frame = ttk.Frame(root, padding="10"); main_frame.pack(fill="both", expand=True)
         status_frame = ttk.LabelFrame(main_frame, text="服务状态", padding="10"); status_frame.pack(fill="x", pady=5)
         self.create_status_widgets(status_frame)
