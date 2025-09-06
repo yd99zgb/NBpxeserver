@@ -7,7 +7,6 @@ import configparser
 import os
 import subprocess
 import shlex # 用于安全地拆分命令行参数
-import socket
 
 # --- 文件名常量 ---
 CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
@@ -138,14 +137,13 @@ class ClientManager:
         self.frame = ttk.Frame(parent_frame)
         self.client_counter = 0; self.mac_to_iid = {}; self.ip_to_mac = {}; self.map_lock = threading.Lock()
         
+        # <-- 新增: 用于存储每个MAC最后启动的WIM文件
         self.mac_to_last_wim = {}
 
-        # <-- 修改: 更新状态映射表 -->
         self.STATUS_MAP = {
             'pxe': 'PXE', 'pxemenu': 'PXE菜单', 'ipxe': 'iPXE', 
-            'online': '在线', 'transfer_pe': '传输PE',
-            'get_ip': '获取IP', # 文本缩短以适应UI
-            'msft_online': '在线'
+            'online': '在线', 'transfer_pe': '传输PE', 'boot_pe': '启动PE',
+            'get_ip': '获取IP地址'
         }
 
         self.selection_order = []
@@ -260,6 +258,7 @@ class ClientManager:
                     iid = self.tree.insert('', 0, values=values, tags=tags)
                     self.mac_to_iid[mac_formatted] = iid
                     
+                    # <-- 新增: 从INI加载WIM历史记录
                     last_wim = client_data.get('last_wim', '')
                     if last_wim:
                         self.mac_to_last_wim[mac_formatted] = last_wim
@@ -278,6 +277,7 @@ class ClientManager:
             vals = self.tree.item(iid, 'values')
             if len(vals) == 6:
                 seq, firmware, name, ip, mac, status = vals
+                # <-- 新增: 保存WIM历史记录
                 last_wim = self.mac_to_last_wim.get(mac, '')
                 config[mac] = {
                     'seq': str(seq), 
@@ -302,9 +302,6 @@ class ClientManager:
         menu = tk.Menu(self.root, tearoff=0)
         item_state = 'normal' if selection_count > 0 else 'disabled'
         
-        menu.add_command(label="唤醒 (WOL)", command=self._wake_on_lan_command, state=item_state)
-        menu.add_separator()
-
         for item in self.menu_config:
             cmd = lambda p=item['path'], a=item['args']: self._execute_custom_command(p, a)
             menu.add_command(label=item['name'], command=cmd, state=item_state)
@@ -386,7 +383,7 @@ class ClientManager:
             for iid in sel_iids:
                 mac = self.tree.item(iid, 'values')[4]
                 if mac in self.mac_to_iid: del self.mac_to_iid[mac]
-                if mac in self.mac_to_last_wim: del self.mac_to_last_wim[mac]
+                if mac in self.mac_to_last_wim: del self.mac_to_last_wim[mac] # 清理WIM记录
                 self.tree.delete(iid)
             self._save_config_to_ini()
 
@@ -394,80 +391,33 @@ class ClientManager:
         if not self.tree.get_children(): return
         if messagebox.askyesno("确认清空", "警告：这将从列表和配置文件中永久删除所有客户机记录！\n菜单配置将保留。\n\n您确定要继续吗?", icon='warning', parent=self.root):
             self.mac_to_iid.clear()
-            self.mac_to_last_wim.clear()
+            self.mac_to_last_wim.clear() # 清理WIM记录
             for iid in self.tree.get_children(''): self.tree.delete(iid)
             self.client_counter = 0
             self._save_config_to_ini()
-    
-    def _send_wol_packet(self, mac_address):
-        """发送网络唤醒魔法包到指定的MAC地址。"""
-        try:
-            mac_bytes = bytes.fromhex(mac_address.replace(':', '').replace('-', ''))
-            if len(mac_bytes) != 6:
-                raise ValueError("无效的MAC地址格式")
-            
-            magic_packet = b'\xff' * 6 + mac_bytes * 16
-            
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                sock.sendto(magic_packet, ('255.255.255.255', 9))
-            return True, None
-        except Exception as e:
-            return False, str(e)
 
-    def _wake_on_lan_command(self):
-        """处理WOL右键菜单命令。"""
-        ordered_selection = [item for item in self.selection_order if item in self.tree.selection()]
-        if not ordered_selection:
-            return
+    # In client.py
 
-        success_count = 0
-        failed_macs = []
+    # <-- 修改: 简化函数，直接信任来自服务器的状态提示
+    # In client.py
 
-        for iid in ordered_selection:
-            vals = self.tree.item(iid, 'values')
-            mac = vals[4]
-            success, error_msg = self._send_wol_packet(mac)
-            if success:
-                success_count += 1
-            else:
-                failed_macs.append(mac)
-                print(f"发送WOL包到 {mac} 失败: {error_msg}")
-
-        if success_count > 0:
-            message = f"已向 {success_count} 台客户机发送唤醒指令。"
-            if failed_macs:
-                message += f"\n\n失败 {len(failed_macs)} 台 (MAC地址可能无效)。"
-            messagebox.showinfo("操作完成", message, parent=self.root)
-        else:
-            messagebox.showerror("操作失败", f"未能向任何选定的客户机发送唤醒指令。\n请检查MAC地址格式。", parent=self.root)
-
-    def handle_dhcp_request(self, mac, ip, state_hint, firmware_type=None, hostname=None):
+    def handle_dhcp_request(self, mac, ip, state_hint, firmware_type=None):
         mac_formatted = mac.replace(":", "-").upper()
         
         with self.map_lock:
             if ip and ip != '0.0.0.0': self.ip_to_mac[ip] = mac_formatted
         
         status = self.STATUS_MAP.get(state_hint, state_hint)
-        
-        if state_hint == 'msft_online':
-            last_wim = self.mac_to_last_wim.get(mac_formatted)
-            if last_wim:
-                status = f"{self.STATUS_MAP['online']} [{last_wim}]"
-            else:
-                status = self.STATUS_MAP['online']
-                
         update_data = {'status': status}
         if ip and ip != '0.0.0.0': update_data['ip'] = ip
         
-        if hostname:
-            update_data['name'] = hostname
-
+        # <-- 修改: 核心逻辑
+        # 只有在状态不是“获取IP地址”时，才更新固件信息。
+        # 这可以防止操作系统启动后的DHCP请求覆盖掉PXE阶段获取的正确固件类型。
         if firmware_type and state_hint != 'get_ip':
             update_data['firmware'] = firmware_type
         
         self._update_ui(mac_formatted, update_data)
-
     def _get_mac_from_ip(self, ip):
         with self.map_lock: return self.ip_to_mac.get(ip)
 
@@ -477,19 +427,19 @@ class ClientManager:
             status_text = f"{self.STATUS_MAP['transfer_pe']} [{os.path.basename(filename)}]"
             self._update_ui(mac, {'status': status_text})
 
-    # <-- 修改: 更新此函数以设置新的中间状态 -->
     def handle_file_transfer_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
         if mac and filename.lower().endswith('.wim'):
             basename = os.path.basename(filename)
+            # <-- 新增: 记录WIM文件名
             self.mac_to_last_wim[mac] = basename
-            # 将状态设置为 "获取IP [wim文件名]"
-            status_text = f"{self.STATUS_MAP['get_ip']} [{basename}]"
+            status_text = f"{self.STATUS_MAP['boot_pe']} [{basename}]"
             self._update_ui(mac, {'status': status_text})
 
     def handle_file_upload_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
         if mac:
+            # <-- 修改: 构造包含WIM文件名的在线状态
             last_wim = self.mac_to_last_wim.get(mac)
             if last_wim:
                 status_text = f"{self.STATUS_MAP['online']} [{last_wim}]"

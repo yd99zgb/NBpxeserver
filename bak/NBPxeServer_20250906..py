@@ -258,6 +258,124 @@ def build_pxe_option43_menu(menu_cfg):
     payload += b'\xff'
     return bytes(payload)
 
+
+    if len(req_pkt) < 240: return None
+    try:
+        xid, chaddr = req_pkt[4:8], req_pkt[28:44]
+        client_mac = ":".join(f"{b:02x}" for b in chaddr[:6])
+        opts = parse_dhcp_options(req_pkt)
+        msg_type = opts.get(53, b'\x00')[0]
+        # <-- 修改: 调用 client_manager 的方法来处理状态更新
+        if client_manager:
+            client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxe')
+    except Exception as e:
+        log_message(f"DHCP: 解析请求包失败: {e}", "ERROR"); return None
+
+    arch_name = 'bios'
+    if 93 in opts and len(opts[93]) >= 2:
+        arch_code = struct.unpack('!H', opts[93][:2])[0]
+        arch_name = ARCH_TYPES.get(arch_code, 'bios')
+
+    menu_cfg_key_prefix = 'pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios'
+    menu_enabled = cfg.get(f'{menu_cfg_key_prefix}_enabled', False)
+    final_server_ip = cfg['server_ip']
+    boot_file = ""
+    option43 = b''
+    is_menu_offer = False
+    selected_item_type = None
+    selected_item_layer = 0
+    if 43 in opts:
+        pxe_opts = opts[43]
+        i = 0
+        while i < len(pxe_opts) - 1:
+            sub_code, sub_len = pxe_opts[i], pxe_opts[i+1]
+            if sub_code == 255: break
+            if sub_code == 71 and sub_len >= 4:
+                selected_item_type = struct.unpack('!H', pxe_opts[i+2:i+4])[0]
+                selected_item_layer = struct.unpack('!H', pxe_opts[i+4:i+6])[0] if sub_len >= 4 else 0
+                break
+            i += 2 + sub_len
+    if selected_item_type is not None:
+        menu_items_str = cfg.get(f'{menu_cfg_key_prefix}_items', '')
+        for line in menu_items_str.strip().splitlines():
+            line = line.strip()
+            if not line or line.startswith(';'): continue
+            parts = [p.strip() for p in line.split(',', 3)]
+            if len(parts) == 4:
+                try:
+                    if int(parts[2], 16) == selected_item_type:
+                        boot_file = parts[1]
+                        if parts[3] and parts[3] != '0.0.0.0':
+                            final_server_ip = parts[3]
+                        break
+                except ValueError: continue
+        log_message(f"DHCP: 客户端 {client_mac} 已选择菜单项 {selected_item_type:04x}, 提供文件: '{boot_file or '本地启动'}' an Server: {final_server_ip}")
+        option43_ack_payload = bytearray()
+        boot_item_val = selected_item_type.to_bytes(2, 'big') + selected_item_layer.to_bytes(2, 'big')
+        option43_ack_payload += bytes([71, len(boot_item_val)]) + boot_item_val
+        option43_ack_payload += b'\xff'
+        option43 = bytes(option43_ack_payload)
+
+    elif menu_enabled and b'iPXE' not in opts.get(77, b''):
+        is_menu_offer = True
+        menu_config = {
+            'enabled': True, 'arch': arch_name.upper(),
+            'timeout': cfg[f'{menu_cfg_key_prefix}_timeout'],
+            'randomize_timeout': cfg[f'{menu_cfg_key_prefix}_randomize_timeout'],
+            'prompt': cfg[f'{menu_cfg_key_prefix}_prompt'],
+            'items': cfg[f'{menu_cfg_key_prefix}_items']
+        }
+        option43 = build_pxe_option43_menu(menu_config)
+        log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供PXE菜单")
+        if client_manager:
+            client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
+    else:
+        is_ipxe_client = b'iPXE' in opts.get(77, b'')
+        boot_file = cfg['bootfile_ipxe'] if is_ipxe_client else cfg.get(f"bootfile_{arch_name}", cfg['bootfile_bios'])
+        log_message(f"DHCP: 为 {client_mac} 直接启动, 提供文件: '{boot_file}'")
+        if is_ipxe_client and client_manager:
+             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'ipxe')
+
+    resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
+    if resp_msg_type == 0: return None
+
+    resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
+    resp_pkt += req_pkt[12:16]
+    resp_pkt += socket.inet_aton(assigned_ip)
+    final_server_ip_bytes = socket.inet_aton(final_server_ip)
+    siaddr = b'\x00\x00\x00\x00' if is_menu_offer else final_server_ip_bytes
+    resp_pkt += siaddr
+    resp_pkt += req_pkt[24:28] + chaddr + (b'\x00' * 64)
+    file_bytes = boot_file.encode('ascii', 'ignore')
+    resp_pkt += file_bytes + b'\x00' * (128 - len(file_bytes))
+    resp_pkt += b'\x63\x82\x53\x63'
+
+    resp_pkt += bytes([53, 1, resp_msg_type]) + bytes([54, 4]) + socket.inet_aton(cfg['server_ip']) + bytes([60, 9]) + b'PXEClient'
+    if 97 in opts: resp_pkt += bytes([97, len(opts[97])]) + opts[97]
+    if option43: resp_pkt += bytes([43, len(option43)]) + option43
+    
+    if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
+        resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
+        resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
+        resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
+        resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
+
+    if cfg.get('dhcp_options_enabled', False):
+        options_text = cfg.get('dhcp_options_text', '')
+        if options_text:
+            custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(options_text)
+            if custom_options_bytes:
+                resp_pkt += custom_options_bytes
+                log_message(f"DHCP: 已为 {client_mac} 添加 {len(custom_options_bytes)} 字节的自定义选项。")
+
+    resp_pkt += b'\xff'
+    return bytes(resp_pkt)
+# In NBPxeServer.py
+
+# In NBPxeServer.py
+
+# In NBPxeServer.py
+
 def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False):
     if len(req_pkt) < 240: return None
     try:
@@ -268,60 +386,6 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     except Exception as e:
         log_message(f"DHCP: 解析请求包失败: {e}", "ERROR"); return None
 
-    vendor_class = opts.get(60, b'').decode(errors='ignore')
-    if vendor_class:
-        log_message(f"DHCP: 客户端 {client_mac} Vendor Class Identifier = '{vendor_class}'")
-
-    if 'MSFT 5.0' in vendor_class:
-        log_message(f"DHCP: 客户端 {client_mac} (Windows 获取IP) 请求地址。")
-        
-        # <-- 新增: 检查并解析主机名 (Option 12) -->
-        hostname = None
-        if 12 in opts:
-            try:
-                hostname = opts[12].decode(errors='ignore').strip()
-                if hostname:
-                    log_message(f"DHCP: 客户端 {client_mac} 报告主机名: {hostname}")
-            except Exception:
-                pass # 忽略解码错误
-        
-        if client_manager:
-            # 将主机名传递给客户端管理器
-            client_manager.handle_dhcp_request(client_mac, assigned_ip, 'msft_online', hostname=hostname)
-        
-        resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
-        if resp_msg_type == 0: return None
-        
-        # Build a standard DHCP response without any PXE/boot options
-        resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
-        resp_pkt += req_pkt[12:16]
-        resp_pkt += socket.inet_aton(assigned_ip)
-        resp_pkt += b'\x00\x00\x00\x00' # siaddr (no next server)
-        resp_pkt += req_pkt[24:28]
-        resp_pkt += chaddr
-        resp_pkt += b'\x00' * (64 + 128) # sname (64) + file (128) are zero
-        resp_pkt += b'\x63\x82\x53\x63'
-
-        resp_pkt += bytes([53, 1, resp_msg_type])
-        resp_pkt += bytes([54, 4]) + socket.inet_aton(cfg['server_ip'])
-        
-        if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
-            resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
-            resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
-            resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
-            resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
-
-        if cfg.get('dhcp_options_enabled', False):
-            options_text = cfg.get('dhcp_options_text', '')
-            if options_text:
-                custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(options_text)
-                if custom_options_bytes:
-                    resp_pkt += custom_options_bytes
-        
-        resp_pkt += b'\xff'
-        return bytes(resp_pkt)
-
-    # --- Original PXE logic for non-Windows clients ---
     arch_name = 'bios'
     if 93 in opts and len(opts[93]) >= 2:
         arch_code = struct.unpack('!H', opts[93][:2])[0]
@@ -329,10 +393,12 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     
     firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
 
-    if client_manager:
-        client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxe', firmware_type=firmware_display)
-
+    # <-- 修改: 根据是否存在主机名，直接决定初始状态
     has_hostname = 12 in opts
+    initial_state_hint = 'get_ip' if has_hostname else 'pxe'
+
+    if client_manager:
+        client_manager.handle_dhcp_request(client_mac, assigned_ip, initial_state_hint, firmware_type=firmware_display)
 
     menu_cfg_key_prefix = 'pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios'
     menu_enabled = cfg.get(f'{menu_cfg_key_prefix}_enabled', False)
@@ -388,6 +454,127 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         if client_manager:
             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
     else:
+        if has_hostname and initial_state_hint != 'get_ip': # 只有在状态还未被设为get_ip时才记录
+            log_message(f"DHCP: 客户端 {client_mac} (Hostname: {opts[12].decode(errors='ignore')}) 请求IP, 跳过PXE菜单。")
+
+        is_ipxe_client = b'iPXE' in opts.get(77, b'')
+        boot_file = cfg['bootfile_ipxe'] if is_ipxe_client else cfg.get(f"bootfile_{arch_name}", cfg['bootfile_bios'])
+        log_message(f"DHCP: 为 {client_mac} 直接启动, 提供文件: '{boot_file}'")
+        if is_ipxe_client and client_manager:
+             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'ipxe')
+
+    resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
+    if resp_msg_type == 0: return None
+
+    resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
+    resp_pkt += req_pkt[12:16]
+    resp_pkt += socket.inet_aton(assigned_ip)
+    final_server_ip_bytes = socket.inet_aton(final_server_ip)
+    siaddr = b'\x00\x00\x00\x00' if is_menu_offer else final_server_ip_bytes
+    resp_pkt += siaddr
+    resp_pkt += req_pkt[24:28] + chaddr + (b'\x00' * 64)
+    file_bytes = boot_file.encode('ascii', 'ignore')
+    resp_pkt += file_bytes + b'\x00' * (128 - len(file_bytes))
+    resp_pkt += b'\x63\x82\x53\x63'
+
+    resp_pkt += bytes([53, 1, resp_msg_type]) + bytes([54, 4]) + socket.inet_aton(cfg['server_ip']) + bytes([60, 9]) + b'PXEClient'
+    if 97 in opts: resp_pkt += bytes([97, len(opts[97])]) + opts[97]
+    if option43: resp_pkt += bytes([43, len(option43)]) + option43
+    
+    if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
+        resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
+        resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
+        resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
+        resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
+
+    if cfg.get('dhcp_options_enabled', False):
+        options_text = cfg.get('dhcp_options_text', '')
+        if options_text:
+            custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(options_text)
+            if custom_options_bytes:
+                resp_pkt += custom_options_bytes
+                log_message(f"DHCP: 已为 {client_mac} 添加 {len(custom_options_bytes)} 字节的自定义选项。")
+
+    resp_pkt += b'\xff'
+    return bytes(resp_pkt)
+    if len(req_pkt) < 240: return None
+    try:
+        xid, chaddr = req_pkt[4:8], req_pkt[28:44]
+        client_mac = ":".join(f"{b:02x}" for b in chaddr[:6])
+        opts = parse_dhcp_options(req_pkt)
+        msg_type = opts.get(53, b'\x00')[0]
+    except Exception as e:
+        log_message(f"DHCP: 解析请求包失败: {e}", "ERROR"); return None
+
+    arch_name = 'bios'
+    if 93 in opts and len(opts[93]) >= 2:
+        arch_code = struct.unpack('!H', opts[93][:2])[0]
+        arch_name = ARCH_TYPES.get(arch_code, 'bios')
+    
+    firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
+
+    if client_manager:
+        client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxe', firmware_type=firmware_display)
+
+    # <-- 新增: 检查是否存在主机名 (Option 12)
+    has_hostname = 12 in opts
+
+    menu_cfg_key_prefix = 'pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios'
+    menu_enabled = cfg.get(f'{menu_cfg_key_prefix}_enabled', False)
+    final_server_ip = cfg['server_ip']
+    boot_file = ""
+    option43 = b''
+    is_menu_offer = False
+    selected_item_type = None
+    selected_item_layer = 0
+    if 43 in opts:
+        pxe_opts = opts[43]
+        i = 0
+        while i < len(pxe_opts) - 1:
+            sub_code, sub_len = pxe_opts[i], pxe_opts[i+1]
+            if sub_code == 255: break
+            if sub_code == 71 and sub_len >= 4:
+                selected_item_type = struct.unpack('!H', pxe_opts[i+2:i+4])[0]
+                selected_item_layer = struct.unpack('!H', pxe_opts[i+4:i+6])[0] if sub_len >= 4 else 0
+                break
+            i += 2 + sub_len
+    if selected_item_type is not None:
+        menu_items_str = cfg.get(f'{menu_cfg_key_prefix}_items', '')
+        for line in menu_items_str.strip().splitlines():
+            line = line.strip()
+            if not line or line.startswith(';'): continue
+            parts = [p.strip() for p in line.split(',', 3)]
+            if len(parts) == 4:
+                try:
+                    if int(parts[2], 16) == selected_item_type:
+                        boot_file = parts[1]
+                        if parts[3] and parts[3] != '0.0.0.0':
+                            final_server_ip = parts[3]
+                        break
+                except ValueError: continue
+        log_message(f"DHCP: 客户端 {client_mac} 已选择菜单项 {selected_item_type:04x}, 提供文件: '{boot_file or '本地启动'}' an Server: {final_server_ip}")
+        option43_ack_payload = bytearray()
+        boot_item_val = selected_item_type.to_bytes(2, 'big') + selected_item_layer.to_bytes(2, 'big')
+        option43_ack_payload += bytes([71, len(boot_item_val)]) + boot_item_val
+        option43_ack_payload += b'\xff'
+        option43 = bytes(option43_ack_payload)
+
+    # <-- 修改: 增加 has_hostname 判断条件
+    elif menu_enabled and b'iPXE' not in opts.get(77, b'') and not has_hostname:
+        is_menu_offer = True
+        menu_config = {
+            'enabled': True, 'arch': arch_name.upper(),
+            'timeout': cfg[f'{menu_cfg_key_prefix}_timeout'],
+            'randomize_timeout': cfg[f'{menu_cfg_key_prefix}_randomize_timeout'],
+            'prompt': cfg[f'{menu_cfg_key_prefix}_prompt'],
+            'items': cfg[f'{menu_cfg_key_prefix}_items']
+        }
+        option43 = build_pxe_option43_menu(menu_config)
+        log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供PXE菜单")
+        if client_manager:
+            client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
+    else:
+        # 如果带有主机名，记录一下日志
         if has_hostname:
             log_message(f"DHCP: 客户端 {client_mac} (Hostname: {opts[12].decode(errors='ignore')}) 请求IP, 跳过PXE菜单。")
 
@@ -440,49 +627,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     except Exception as e:
         log_message(f"DHCP: 解析请求包失败: {e}", "ERROR"); return None
 
-    vendor_class = opts.get(60, b'').decode(errors='ignore')
-    if vendor_class:
-        log_message(f"DHCP: 客户端 {client_mac} Vendor Class Identifier = '{vendor_class}'")
-
-    if 'MSFT 5.0' in vendor_class:
-        log_message(f"DHCP: 客户端 {client_mac} (Windows 获取IP) 请求地址。")
-        if client_manager:
-            # <-- 修改: 不再传递firmware_type，以保留原始的固件信息 -->
-            client_manager.handle_dhcp_request(client_mac, assigned_ip, 'msft_online')
-        
-        resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
-        if resp_msg_type == 0: return None
-        
-        # Build a standard DHCP response without any PXE/boot options
-        resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
-        resp_pkt += req_pkt[12:16]
-        resp_pkt += socket.inet_aton(assigned_ip)
-        resp_pkt += b'\x00\x00\x00\x00' # siaddr (no next server)
-        resp_pkt += req_pkt[24:28]
-        resp_pkt += chaddr
-        resp_pkt += b'\x00' * (64 + 128) # sname (64) + file (128) are zero
-        resp_pkt += b'\x63\x82\x53\x63'
-
-        resp_pkt += bytes([53, 1, resp_msg_type])
-        resp_pkt += bytes([54, 4]) + socket.inet_aton(cfg['server_ip'])
-        
-        if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
-            resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
-            resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
-            resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
-            resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
-
-        if cfg.get('dhcp_options_enabled', False):
-            options_text = cfg.get('dhcp_options_text', '')
-            if options_text:
-                custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(options_text)
-                if custom_options_bytes:
-                    resp_pkt += custom_options_bytes
-        
-        resp_pkt += b'\xff'
-        return bytes(resp_pkt)
-
-    # --- Original PXE logic for non-Windows clients ---
+    # <-- 修改: 在这里确定固件类型
     arch_name = 'bios'
     if 93 in opts and len(opts[93]) >= 2:
         arch_code = struct.unpack('!H', opts[93][:2])[0]
@@ -490,10 +635,9 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     
     firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
 
+    # <-- 修改: 在第一次调用时就传入固件类型
     if client_manager:
         client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxe', firmware_type=firmware_display)
-
-    has_hostname = 12 in opts
 
     menu_cfg_key_prefix = 'pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios'
     menu_enabled = cfg.get(f'{menu_cfg_key_prefix}_enabled', False)
@@ -535,7 +679,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         option43_ack_payload += b'\xff'
         option43 = bytes(option43_ack_payload)
 
-    elif menu_enabled and b'iPXE' not in opts.get(77, b'') and not has_hostname:
+    elif menu_enabled and b'iPXE' not in opts.get(77, b''):
         is_menu_offer = True
         menu_config = {
             'enabled': True, 'arch': arch_name.upper(),
@@ -549,9 +693,6 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         if client_manager:
             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
     else:
-        if has_hostname:
-            log_message(f"DHCP: 客户端 {client_mac} (Hostname: {opts[12].decode(errors='ignore')}) 请求IP, 跳过PXE菜单。")
-
         is_ipxe_client = b'iPXE' in opts.get(77, b'')
         boot_file = cfg['bootfile_ipxe'] if is_ipxe_client else cfg.get(f"bootfile_{arch_name}", cfg['bootfile_bios'])
         log_message(f"DHCP: 为 {client_mac} 直接启动, 提供文件: '{boot_file}'")
