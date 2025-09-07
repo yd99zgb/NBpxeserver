@@ -24,7 +24,7 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 
 import option as dhcp_option_handler
 from option import EXAMPLE_OPTIONS
-from client import ClientManager
+from client import ClientManager # <-- 修改: 导入新的 ClientManager
 
 # ================================================================= #
 # ======================== 核心服务器逻辑 ========================= #
@@ -32,25 +32,21 @@ from client import ClientManager
 
 log_queue = queue.Queue()
 LOG_FILENAME = 'nbpxe.log'
+# <-- 新增: 用于在DHCP和文件服务器之间关联IP和MAC的全局映射
 ip_to_mac_map = {}
 ip_map_lock = threading.Lock()
+# 全局客户端管理器实例，将在GUI初始化时创建
 client_manager = None
 
 def log_message(message, level='INFO'):
-    log_levels = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3}
-    display_level = log_levels.get('DEBUG', 1) 
-
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    
     full_log_entry = f"[{timestamp}] [{level}] {message}"
     try:
         with open(LOG_FILENAME, 'a', encoding='utf-8') as f:
             f.write(full_log_entry + '\n')
     except Exception as e:
         print(f"[CRITICAL LOG ERROR] Failed to write to {LOG_FILENAME}: {e}")
-    
-    if log_levels.get(level, 1) >= display_level:
-        log_queue.put((message, level))
+    log_queue.put((message, level))
 
 INI_FILENAME = 'NBpxe.ini'
 config = configparser.ConfigParser()
@@ -435,7 +431,76 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
 dhcp_thread, proxy_thread, tftp_thread, http_thread, dhcp_detector_thread = None, None, None, None, None
 stop_event = threading.Event()
 
+# 文件: NBPxeServer.py
+# 找到并替换整个 detect_other_dhcp_servers 函数:
+
 def detect_other_dhcp_servers(stop_evt):
+    log_message("DHCP探测器: 开始扫描局域网中的其它DHCP服务器(持续15秒)...")
+    listen_ip = SETTINGS.get('listen_ip', '0.0.0.0')
+    server_ip = SETTINGS.get('server_ip')
+    bind_ip = listen_ip if listen_ip != '0.0.0.0' else ''
+    discover_pkt = bytearray(b'\x01\x01\x06\x00')
+    discover_pkt += os.urandom(4)
+    discover_pkt += b'\x00\x00\x80\x00'
+    discover_pkt += b'\x00' * 16
+    # --- 注意: 这里使用了特殊的MAC地址，client.py会对其进行特殊处理 ---
+    discover_pkt += b'\x00\x11\x22\x33\x44\x55' + b'\x00'*10
+    discover_pkt += b'\x00' * 192
+    discover_pkt += b'\x63\x82\x53\x63'
+    discover_pkt += b'\x35\x01\x01'
+    discover_pkt += b'\x37\x05\x01\x03\x06\x0c\x0f'
+    discover_pkt += b'\x0c\x08NBPXE-Scan'
+    discover_pkt += b'\xff'
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        sock.bind((bind_ip, 68))
+    except Exception as e:
+        log_message(f"DHCP探测器: 无法绑定到端口68进行检测: {e}", "ERROR")
+        sock.close()
+        return
+    start_time = time.time()
+    found_server = False
+    try:
+        while not stop_evt.is_set() and time.time() - start_time < 15 and not found_server:
+            log_message("DHCP探测器: 正在发送DHCPDISCOVER广播包...")
+            sock.sendto(discover_pkt, ('255.255.255.255', 67))
+            listen_start_time = time.time()
+            detected_servers = set()
+            while time.time() - listen_start_time < 3:
+                if stop_evt.is_set(): break
+                try:
+                    sock.settimeout(1.0)
+                    data, _ = sock.recvfrom(1024)
+                    if len(data) > 240:
+                        opts = parse_dhcp_options(data)
+                        if opts.get(53) == b'\x02':
+                            server_id_bytes = opts.get(54)
+                            if server_id_bytes:
+                                server_id = socket.inet_ntoa(server_id_bytes)
+                                if server_id != server_ip and server_id != listen_ip:
+                                    detected_servers.add(server_id)
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    log_message(f"DHCP探测器: 接收探测响应时出错: {e}", "ERROR")
+            if detected_servers:
+                for srv_ip in detected_servers:
+                    log_message(f"警告: 在局域网中发现另一个DHCP服务器, 地址为 {srv_ip}！", "WARNING")
+                log_message("建议: 为避免IP地址冲突, 请在本软件中使用“代理(Proxy)”模式, 或停用网络中的其它DHCP服务器。", "WARNING")
+                found_server = True
+            if not found_server and not stop_evt.is_set():
+                time.sleep(2)
+    finally:
+        if not found_server and not stop_evt.is_set():
+            log_message("DHCP探测器: 扫描结束, 未发现其它DHCP服务器。")
+        sock.close()
+        
+        # --- 修改部分: 在探测结束后，调用client_manager删除探测行 ---
+        if client_manager:
+            client_manager.remove_probe_client()
+        # --- 修改结束 ---
     log_message("DHCP探测器: 开始扫描局域网中的其它DHCP服务器(持续15秒)...")
     listen_ip = SETTINGS.get('listen_ip', '0.0.0.0')
     server_ip = SETTINGS.get('server_ip')
@@ -496,8 +561,6 @@ def detect_other_dhcp_servers(stop_evt):
         if not found_server and not stop_evt.is_set():
             log_message("DHCP探测器: 扫描结束, 未发现其它DHCP服务器。")
         sock.close()
-        if client_manager:
-            client_manager.remove_probe_client()
 
 def run_dhcp_server(cfg, stop_evt):
     mac_to_ip, offered_ips = {}, {}
@@ -1112,6 +1175,9 @@ class ConfigWindow(tk.Toplevel):
                 except (tk.TclError, ValueError): temp_settings[key] = 0 if isinstance(var, tk.IntVar) else ""
         SETTINGS.update(temp_settings); save_config_to_ini(); self.destroy()
 
+# 文件: NBPxeServer.py
+# 请用这段代码替换原文件中的整个 class NBpxeApp
+
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
@@ -1129,15 +1195,37 @@ class NBpxeApp:
 
         client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
         global client_manager
-        client_manager = ClientManager(client_list_frame, log_message)
+        client_manager = ClientManager(client_list_frame)
         client_manager.pack(fill="both", expand=True)
         
-        log_frame = ttk.LabelFrame(paned_window, text="实时日志", padding="10")
+        # --- 修改开始: 创建带有自定义多色标题的日志窗格 ---
+
+        # 1. 创建一个标题带空格的LabelFrame，为自定义标签腾出位置
+        log_frame = ttk.LabelFrame(paned_window, text=" ", padding="10")
+
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=5)
         self.log_text.pack(fill="both", expand=True)
         self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
         self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
-        self.log_text.tag_config('debug', foreground='grey')
+        
+        # 2. 获取背景色，以便让自定义标签的背景与之融合
+        #    注意：这在某些复杂主题下可能不完美，但对多数情况有效
+        style = ttk.Style()
+        bg_color = style.lookup('TFrame', 'background')
+
+        # 3. 创建两个Label作为标题，并设置背景色
+        title_part1 = ttk.Label(log_frame, text="实时日志", background=bg_color)
+        title_part2 = ttk.Label(log_frame, text=" (⇕ 可拖动边框调整大小)", foreground="grey", background=bg_color)
+        
+        # 4. 使用 place() 将它们精确地放到标题位置
+        #    y=-9 左右的值通常可以将标签的中心对准边框
+        title_part1.place(x=8, y=-9)
+        #    为了确定第二部分的x坐标，我们先强制更新UI获取第一部分的宽度
+        title_part1.update_idletasks() 
+        part1_width = title_part1.winfo_width()
+        title_part2.place(x=8 + part1_width, y=-9)
+
+        # --- 修改结束 ---
 
         paned_window.add(client_list_frame, weight=3)
         paned_window.add(log_frame, weight=1)
@@ -1185,7 +1273,113 @@ class NBpxeApp:
         try:
             while True:
                 msg, level = log_queue.get_nowait()
-                tag = level.lower() if level in ['WARNING', 'ERROR', 'DEBUG'] else ''
+                tag = level.lower() if level in ['WARNING', 'ERROR'] else ''
+                self.log_text.config(state='normal')
+                self.log_text.insert(tk.END, msg + '\n', tag)
+                self.log_text.see(tk.END)
+                self.log_text.config(state='disabled')
+        except queue.Empty: pass
+        finally:
+            self.root.after(100, self.process_log_queue)
+
+    def update_status_display(self):
+        is_dhcp_running = dhcp_thread and dhcp_thread.is_alive()
+        is_proxy_running = proxy_thread and proxy_thread.is_alive()
+        if SETTINGS.get('dhcp_enabled'):
+            if is_dhcp_running and is_proxy_running:
+                mode = SETTINGS.get('dhcp_mode', 'proxy').upper()
+                self.status_labels["DHCP"].config(text=f"● 运行中 ({mode})", foreground="green")
+            else: self.status_labels["DHCP"].config(text="■ 未启动", foreground="orange")
+        else: self.status_labels["DHCP"].config(text="■ 已禁用", foreground="grey")
+        is_tftp_running = tftp_thread and tftp_thread.is_alive()
+        if SETTINGS.get('tftp_enabled'):
+            text, color = ("● 运行中", "green") if is_tftp_running else ("■ 未启动", "orange")
+            self.status_labels["TFTP"].config(text=text, foreground=color)
+        else: self.status_labels["TFTP"].config(text="■ 已禁用", foreground="grey")
+        is_http_running = http_thread and http_thread.is_alive()
+        if SETTINGS.get('http_enabled'):
+            text, color = ("● 运行中", "green") if is_http_running else ("■ 未启动", "orange")
+            self.status_labels["HTTP"].config(text=text, foreground=color)
+        else: self.status_labels["HTTP"].config(text="■ 已禁用", foreground="grey")
+        if SETTINGS.get('smb_enabled'):
+            if is_smb_share_active(SETTINGS.get('smb_share_name')):
+                self.status_labels["SMB"].config(text="● 共享中", foreground="green")
+            else: self.status_labels["SMB"].config(text="■ 未共享", foreground="orange")
+        else: self.status_labels["SMB"].config(text="■ 已禁用", foreground="grey")
+        self.root.after(1000, self.update_status_display)
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NBPXE 服务器 20250905")
+        self.root.geometry("800x600")
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.pack(fill="both", expand=True)
+
+        status_frame = ttk.LabelFrame(main_frame, text="服务状态", padding="10")
+        status_frame.pack(fill="x", pady=5)
+        self.create_status_widgets(status_frame)
+
+        paned_window = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
+        paned_window.pack(fill="both", expand=True, pady=5)
+
+        client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
+        paned_window.add(client_list_frame, weight=3)
+
+        global client_manager
+        client_manager = ClientManager(client_list_frame)
+        client_manager.pack(fill="both", expand=True)
+        
+        log_frame = ttk.LabelFrame(paned_window, text="实时日志 ⇕ 可拖动调整 ⇕", padding="10")
+        paned_window.add(log_frame, weight=1)
+
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=5)
+        self.log_text.pack(fill="both", expand=True)
+        self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
+        self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
+
+        control_frame = ttk.Frame(main_frame, padding="5")
+        control_frame.pack(fill="x")
+        self.create_control_widgets(control_frame)
+        
+        self.process_log_queue()
+        self.update_status_display()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def create_status_widgets(self, parent):
+        self.status_labels = {}
+        services = ["DHCP", "TFTP", "HTTP", "SMB"]
+        for i, service in enumerate(services):
+            ttk.Label(parent, text=f"{service}:").grid(row=0, column=i*2, sticky="w", padx=(0, 5))
+            self.status_labels[service] = ttk.Label(parent, text="■ 已停止", foreground="red", font=('Helvetica', 9, 'bold'))
+            self.status_labels[service].grid(row=0, column=i*2+1, sticky="w", padx=(0, 20))
+    
+    def create_control_widgets(self, parent):
+        ttk.Button(parent, text="启动 / 重启服务", command=start_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="停止所有服务", command=stop_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="修改配置", command=lambda: ConfigWindow(self.root)).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="重置配置", command=self.reset_ini_file).pack(side="left", padx=(15, 5), pady=5)
+        ttk.Button(parent, text="退出程序", command=self.on_closing).pack(side="right", padx=5, pady=5)
+
+    def reset_ini_file(self):
+        if messagebox.askyesno("重置配置?", f"您确定要删除 '{INI_FILENAME}' 并恢复为默认设置吗?\n程序将在之后关闭，请手动重启。"):
+            stop_services()
+            try:
+                if os.path.exists(INI_FILENAME): os.remove(INI_FILENAME)
+                create_default_ini(); load_config_from_ini()
+                messagebox.showinfo("重置成功", f"配置文件已重置。请重启程序应用更改。"); self.on_closing(force=True)
+            except Exception as e: messagebox.showerror("重置失败", f"无法重置配置文件: {e}")
+
+    def on_closing(self, force=False):
+        if force or messagebox.askokcancel("退出", "您确定要退出 NBPXE 服务器吗？"):
+            if client_manager:
+                client_manager.stop_monitoring()
+            stop_services()
+            self.root.destroy()
+    
+    def process_log_queue(self):
+        try:
+            while True:
+                msg, level = log_queue.get_nowait()
+                tag = level.lower() if level in ['WARNING', 'ERROR'] else ''
                 self.log_text.config(state='normal')
                 self.log_text.insert(tk.END, msg + '\n', tag)
                 self.log_text.see(tk.END)

@@ -1,3 +1,5 @@
+# client.py
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading
@@ -137,21 +139,16 @@ class MenuConfigWindow(tk.Toplevel):
 class ClientManager:
     CLIENT_SYMBOL = "\U0001F4BB" 
 
-    def __init__(self, parent_frame, logger=None):
+    def __init__(self, parent_frame):
         self.root = parent_frame.winfo_toplevel()
         self.frame = ttk.Frame(parent_frame)
         self.client_counter = 0; self.mac_to_iid = {}; self.ip_to_mac = {}; self.map_lock = threading.Lock()
-        self.logger = logger
         
         self.mac_to_last_wim = {}
-
-        self.last_checked_index = 0
-        self.CLIENTS_TO_CHECK_PER_CYCLE = 5
 
         self.STATUS_MAP = {
             'pxe': 'PXE', 'pxemenu': 'PXE菜单', 'ipxe': 'iPXE', 
             'online': '在线', 'transfer_pe': '传输PE',
-            'booting_pe': '启动PE',
             'get_ip': '获取IP', 
             'msft_online': '在线',
             'offline': '离线'
@@ -165,9 +162,11 @@ class ClientManager:
         
         self._setup_treeview_columns()
         
+        # --- 定义三种状态的样式 ---
         self.tree.tag_configure('online_status', background='#e6ffed', font=('Helvetica', 9, 'bold'))
         self.tree.tag_configure('offline_status', foreground='grey')
         self.tree.tag_configure('intermediate_status', font=('Helvetica', 9, 'bold'))
+        # --- 样式定义结束 ---
 
         scrollbar = ttk.Scrollbar(self.frame, orient=tk.VERTICAL, command=self.tree.yview); self.tree.configure(yscroll=scrollbar.set)
         
@@ -190,8 +189,7 @@ class ClientManager:
             try:
                 self._check_clients_liveness()
             except Exception as e:
-                if self.logger: self.logger(f"心跳检测线程出错: {e}", "ERROR")
-                else: print(f"心跳检测线程出错: {e}")
+                print(f"心跳检测线程出错: {e}")
             self.stop_heartbeat.wait(20)
 
     def _ping_ip(self, ip):
@@ -212,131 +210,86 @@ class ClientManager:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
         except Exception as e:
-            if self.logger: self.logger(f"Ping {ip} 时发生错误: {e}", "ERROR")
-            else: print(f"Ping {ip} 时发生错误: {e}")
+            print(f"Ping {ip} 时发生错误: {e}")
             return False
 
-    def _get_ip_from_hostname(self, hostname):
-        """尝试通过ping主机名来解析其IP地址。"""
-        if not hostname or hostname == '未知':
-            return None
-        try:
-            param = '-n' if os.name == 'nt' else '-c'
-            command = ['ping', param, '1', hostname]
-            
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                
-            result = subprocess.run(command, capture_output=True, text=True, timeout=2, startupinfo=startupinfo, encoding='utf-8', errors='ignore')
-
-            if result.returncode == 0:
-                match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", result.stdout)
-                if match:
-                    ip = match.group(1)
-                    return ip
-            return None
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return None
-        except Exception as e:
-            if self.logger: self.logger(f"通过主机名 {hostname} 解析IP时出错: {e}", "ERROR")
-            else: print(f"通过主机名 {hostname} 解析IP时出错: {e}")
-            return None
-
     def _check_clients_liveness(self):
+        live_arp_map = self._get_arp_table()
         updates_to_perform = []
-        all_iids = list(self.tree.get_children(''))
         
+        all_iids = self.tree.get_children('')
         if not all_iids:
-            self.last_checked_index = 0
             return
 
-        if self.last_checked_index >= len(all_iids):
-            self.last_checked_index = 0
-
-        # if self.logger:
-        #     self.logger(f"心跳服务: 开始轮流 PING 检测 (从索引 {self.last_checked_index} 开始, 最多 {self.CLIENTS_TO_CHECK_PER_CYCLE} 个)", "DEBUG")
-
-        checked_count = 0
-        current_scan_index = self.last_checked_index
-        
-        for _ in range(len(all_iids)):
-            if checked_count >= self.CLIENTS_TO_CHECK_PER_CYCLE:
-                break
-            
-            iid = all_iids[current_scan_index]
-
+        for iid in all_iids:
             try:
                 current_values = self.tree.item(iid, 'values')
                 if not current_values or len(current_values) < 6: continue
-                _, _, name_with_symbol, current_ip, mac_upper, current_status = current_values
+                _, _, _, current_ip, mac_upper, current_status = current_values
             except tk.TclError:
-                current_scan_index = (current_scan_index + 1) % len(all_iids)
                 continue
 
-            if "在线" not in current_status and "离线" not in current_status:
-                current_scan_index = (current_scan_index + 1) % len(all_iids)
+            is_target_client = self.STATUS_MAP['online'] in current_status or \
+                               self.STATUS_MAP['offline'] in current_status
+
+            if not is_target_client:
                 continue
 
-            checked_count += 1
-            
-            if mac_upper == PROBE_MAC:
-                current_scan_index = (current_scan_index + 1) % len(all_iids)
-                continue
-            
             last_wim = self.mac_to_last_wim.get(mac_upper, '')
-            clean_name = name_with_symbol.lstrip(self.CLIENT_SYMBOL).strip()
+            if not last_wim:
+                continue
             
             is_online = False
-            final_ip = current_ip
+            arp_ip = live_arp_map.get(mac_upper)
+            new_ip = current_ip
 
-            if current_ip != '未知':
-                # if self.logger: self.logger(f"心跳服务: -> PING IP [{current_ip}] for MAC [{mac_upper}]...", "DEBUG")
-                is_online = self._ping_ip(current_ip)
-            elif clean_name and clean_name != '未知':
-                # if self.logger: self.logger(f"心跳服务: -> PING Hostname [{clean_name}] for MAC [{mac_upper}]...", "DEBUG")
-                resolved_ip = self._get_ip_from_hostname(clean_name)
-                if resolved_ip:
-                    is_online = True
-                    final_ip = resolved_ip
-
+            if arp_ip:
+                is_online = True
+                new_ip = arp_ip
+            elif self._ping_ip(current_ip):
+                is_online = True
+            
             update_data = {}
-            online_status_text = f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")
-            offline_status_text = f"{self.STATUS_MAP['offline']}" + (f" [{last_wim}]" if last_wim else "")
-
             if is_online:
-                if online_status_text != current_status or final_ip != current_ip:
-                    update_data['status'] = online_status_text
-                    update_data['ip'] = final_ip
+                new_status = f"{self.STATUS_MAP['online']} [{last_wim}]"
+                if new_ip != current_ip or new_status != current_status:
+                    update_data = {'mac': mac_upper, 'ip': new_ip, 'status': new_status}
             else:
-                if offline_status_text != current_status:
-                    update_data['status'] = offline_status_text
-            
+                new_status = f"{self.STATUS_MAP['offline']} [{last_wim}]"
+                if new_status != current_status:
+                    update_data = {'mac': mac_upper, 'status': new_status}
+
             if update_data:
-                update_data['mac'] = mac_upper
                 updates_to_perform.append(update_data)
-            
-            current_scan_index = (current_scan_index + 1) % len(all_iids)
-        
-        self.last_checked_index = current_scan_index
 
         if updates_to_perform:
             self.root.after(0, self._apply_ui_updates, updates_to_perform)
 
     def _apply_ui_updates(self, updates):
-        final_updates = {}
         for data in updates:
-            mac = data['mac']
-            if mac not in final_updates:
-                final_updates[mac] = {}
-            final_updates[mac].update(data)
-        
-        for mac, data in final_updates.items():
-            self._update_ui(mac, data)
+            self._update_ui(data['mac'], data)
 
     def _get_arp_table(self):
-        pass
+        arp_map = {}
+        try:
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+            result = subprocess.run(['arp', '-a'], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=5, startupinfo=startupinfo)
+            
+            pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\s\t]+(([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2})")
+            
+            for line in result.stdout.splitlines():
+                match = pattern.search(line)
+                if match:
+                    ip = match.group(1)
+                    mac = match.group(2).replace('-', ':').upper()
+                    arp_map[mac] = ip
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+            print(f"无法获取ARP表: {e}")
+        return arp_map
         
     def _setup_bindings(self):
         self.tree.bind('<<TreeviewSelect>>', self._on_selection_change)
@@ -364,14 +317,16 @@ class ClientManager:
             is_probe_client = (mac.upper() == PROBE_MAC)
             final_status = data_to_update.get('status', None)
             
+            # --- 应用新的样式逻辑 ---
             tags = () 
             if not is_probe_client and final_status:
                 if '在线' in final_status:
                     tags = ('online_status',)
                 elif '离线' in final_status:
                     tags = ('offline_status',)
-                else: 
+                else: # 其他所有状态（PXE, 传输中等）
                     tags = ('intermediate_status',)
+            # --- 逻辑结束 ---
             
             if mac in self.mac_to_iid:
                 iid = self.mac_to_iid[mac]
@@ -465,13 +420,15 @@ class ClientManager:
                     status = client_data.get('status', '未知')
                     hostname = client_data.get('name', '未知')
                     
+                    # --- 应用新的样式逻辑到加载过程 ---
                     tags = ()
                     if '在线' in status:
                         tags = ('online_status',)
                     elif '离线' in status:
                         tags = ('offline_status',)
-                    elif status and status != '未知':
+                    elif status and status != '未知': # 如果保存的状态是PXE等
                         tags = ('intermediate_status',)
+                    # --- 逻辑结束 ---
                     
                     display_name = f"{self.CLIENT_SYMBOL} {hostname}".strip()
                     
@@ -492,9 +449,7 @@ class ClientManager:
                         self.mac_to_last_wim[mac_formatted] = last_wim
 
                 self.client_counter = max_seq
-        except Exception as e: 
-            if self.logger: self.logger(f"Error loading {CONFIG_INI_FILENAME}: {e}", "ERROR")
-            else: print(f"Error loading {CONFIG_INI_FILENAME}: {e}")
+        except Exception as e: print(f"Error loading {CONFIG_INI_FILENAME}: {e}")
 
     def _save_config_to_ini(self):
         config = configparser.ConfigParser(interpolation=None)
@@ -523,9 +478,7 @@ class ClientManager:
                 }
         try:
             with open(CONFIG_INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
-        except Exception as e: 
-            if self.logger: self.logger(f"Error saving to {CONFIG_INI_FILENAME}: {e}", "ERROR")
-            else: print(f"Error saving to {CONFIG_INI_FILENAME}: {e}")
+        except Exception as e: print(f"Error saving to {CONFIG_INI_FILENAME}: {e}")
 
     def _show_context_menu(self, event):
         iid = self.tree.identify_row(event.y)
@@ -668,8 +621,7 @@ class ClientManager:
                 success_count += 1
             else:
                 failed_macs.append(mac)
-                if self.logger: self.logger(f"发送WOL包到 {mac} 失败: {error_msg}", "WARNING")
-                else: print(f"发送WOL包到 {mac} 失败: {error_msg}")
+                print(f"发送WOL包到 {mac} 失败: {error_msg}")
 
         if success_count > 0:
             message = f"已向 {success_count} 台客户机发送唤醒指令。"
@@ -689,20 +641,13 @@ class ClientManager:
         
         if state_hint == 'msft_online':
             last_wim = self.mac_to_last_wim.get(mac_formatted)
-            status = f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")
+            if last_wim:
+                status = f"{self.STATUS_MAP['online']} [{last_wim}]"
+            else:
+                status = self.STATUS_MAP['online']
                 
         update_data = {'status': status}
-
-        if ip and ip != '0.0.0.0':
-            update_data['ip'] = ip
-        elif hostname:
-            if self.logger: self.logger(f"DHCP: 客户机 {mac_formatted} 报告主机名 '{hostname}' 但无IP，尝试主动解析...", "DEBUG")
-            resolved_ip = self._get_ip_from_hostname(hostname)
-            if resolved_ip:
-                if self.logger: self.logger(f"DHCP: 成功将 '{hostname}' 解析为 {resolved_ip} (MAC: {mac_formatted})", "INFO")
-                update_data['ip'] = resolved_ip
-                with self.map_lock:
-                    self.ip_to_mac[resolved_ip] = mac_formatted
+        if ip and ip != '0.0.0.0': update_data['ip'] = ip
         
         if hostname:
             update_data['name'] = hostname
@@ -726,14 +671,17 @@ class ClientManager:
         if mac and filename.lower().endswith('.wim'):
             basename = os.path.basename(filename)
             self.mac_to_last_wim[mac] = basename
-            status_text = f"{self.STATUS_MAP['booting_pe']} [{basename}]"
+            status_text = f"{self.STATUS_MAP['get_ip']} [{basename}]"
             self._update_ui(mac, {'status': status_text})
 
     def handle_file_upload_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
         if mac:
             last_wim = self.mac_to_last_wim.get(mac)
-            status_text = f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")
+            if last_wim:
+                status_text = f"{self.STATUS_MAP['online']} [{last_wim}]"
+            else:
+                status_text = self.STATUS_MAP['online']
             self._update_ui(mac, {'status': status_text})
     
     def remove_probe_client(self):
