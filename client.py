@@ -137,6 +137,8 @@ class MenuConfigWindow(tk.Toplevel):
         self.client_manager.update_menu_config(self.local_menu_config); self.destroy()
 
 class ClientManager:
+    CLIENT_SYMBOL = "\U0001F4BB" 
+
     def __init__(self, parent_frame):
         self.root = parent_frame.winfo_toplevel()
         self.frame = ttk.Frame(parent_frame)
@@ -159,8 +161,13 @@ class ClientManager:
         self.tree = ttk.Treeview(self.frame, columns=columns, show='headings', selectmode='extended')
         
         self._setup_treeview_columns()
-        self.tree.tag_configure('online_status', foreground='green', font=('Helvetica', 9, 'bold'))
+        
+        # --- 定义三种状态的样式 ---
+        self.tree.tag_configure('online_status', background='#e6ffed', font=('Helvetica', 9, 'bold'))
         self.tree.tag_configure('offline_status', foreground='grey')
+        self.tree.tag_configure('intermediate_status', font=('Helvetica', 9, 'bold'))
+        # --- 样式定义结束 ---
+
         scrollbar = ttk.Scrollbar(self.frame, orient=tk.VERTICAL, command=self.tree.yview); self.tree.configure(yscroll=scrollbar.set)
         
         scrollbar.pack(side="right", fill="y")
@@ -174,23 +181,18 @@ class ClientManager:
         self.heartbeat_thread.start()
 
     def stop_monitoring(self):
-        """Signals the heartbeat thread to stop."""
         self.stop_heartbeat.set()
 
     def _heartbeat_worker(self):
-        """定期检查已进入PE环境的客户端的状态。"""
-        time.sleep(10) # 首次检查前的初始延迟
+        time.sleep(10)
         while not self.stop_heartbeat.is_set():
             try:
                 self._check_clients_liveness()
             except Exception as e:
                 print(f"心跳检测线程出错: {e}")
-            
-            # 等待20秒进行下一次检查
             self.stop_heartbeat.wait(20)
 
     def _ping_ip(self, ip):
-        """发送单个ping包来检查IP是否可达，超时时间为1秒。"""
         if not ip or ip == '未知':
             return False
         try:
@@ -212,7 +214,6 @@ class ClientManager:
             return False
 
     def _check_clients_liveness(self):
-        """通过 Ping 和 ARP 表检查客户端活动状态并更新UI。"""
         live_arp_map = self._get_arp_table()
         updates_to_perform = []
         
@@ -269,7 +270,6 @@ class ClientManager:
             self._update_ui(data['mac'], data)
 
     def _get_arp_table(self):
-        """执行 'arp -a' 并返回一个 MAC -> IP 的映射字典。"""
         arp_map = {}
         try:
             startupinfo = None
@@ -307,28 +307,28 @@ class ClientManager:
         self.tree.heading('#', text='序号'); self.tree.heading('firmware', text='固件'); self.tree.heading('name', text='计算机名'); self.tree.heading('ip', text='IP地址'); self.tree.heading('mac', text='MAC地址'); self.tree.heading('status', text='状态')
         self.tree.column('#', width=40, anchor=tk.CENTER, stretch=False)
         self.tree.column('firmware', width=60, anchor=tk.CENTER, stretch=False)
-        self.tree.column('name', width=120, anchor=tk.W)
+        self.tree.column('name', width=190, anchor=tk.W)
         self.tree.column('ip', width=120, anchor=tk.W)
         self.tree.column('mac', width=130, anchor=tk.W)
         self.tree.column('status', width=160, anchor=tk.W)
 
-    # --- 修改: 添加对PROBE_MAC的特殊处理 ---
     def _update_ui(self, mac, data_to_update):
         def update_action():
             is_probe_client = (mac.upper() == PROBE_MAC)
-
             final_status = data_to_update.get('status', None)
             
-            # 探测客户端无特殊颜色状态
-            tags = ()
-            if final_status and not is_probe_client:
+            # --- 应用新的样式逻辑 ---
+            tags = () 
+            if not is_probe_client and final_status:
                 if '在线' in final_status:
                     tags = ('online_status',)
                 elif '离线' in final_status:
                     tags = ('offline_status',)
+                else: # 其他所有状态（PXE, 传输中等）
+                    tags = ('intermediate_status',)
+            # --- 逻辑结束 ---
             
             if mac in self.mac_to_iid:
-                # 更新现有条目
                 iid = self.mac_to_iid[mac]
                 if not self.tree.exists(iid):
                     if mac in self.mac_to_iid: del self.mac_to_iid[mac]
@@ -336,29 +336,36 @@ class ClientManager:
 
                 vals = list(self.tree.item(iid, 'values'))
                 
-                # 首先更新通用字段
+                current_display_name = vals[2]
+                clean_name = current_display_name.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
+                hostname = clean_name
+                
+                if 'name' in data_to_update:
+                    hostname = data_to_update['name']
+
                 if 'firmware' in data_to_update: vals[1] = data_to_update['firmware']
-                if 'name' in data_to_update: vals[2] = data_to_update['name']
                 if 'ip' in data_to_update: vals[3] = data_to_update['ip']
                 if final_status: vals[5] = final_status
                 vals[4] = mac.upper()
 
-                # 如果是探测客户端，则覆盖特定字段
                 if is_probe_client:
-                    vals[0] = '*'
-                    vals[1] = '*'
-                    vals[2] = 'DHCP探测'
-                    vals[5] = '*'
+                    vals[0] = '*'; vals[1] = '*'; vals[2] = 'DHCP探测'; vals[5] = '*'
+                else:
+                    vals[2] = f"{self.CLIENT_SYMBOL} {hostname}".strip()
                 
                 self.tree.item(iid, values=tuple(vals), tags=tags)
             else:
-                # 插入新条目
                 seq = '*' if is_probe_client else self.client_counter + 1
+                hostname = data_to_update.get('name', '未知')
+                
+                display_name = 'DHCP探测'
+                if not is_probe_client:
+                    display_name = f"{self.CLIENT_SYMBOL} {hostname}".strip()
                 
                 vals = (
                     seq, 
                     '*' if is_probe_client else data_to_update.get('firmware', '未知'),
-                    'DHCP探测' if is_probe_client else data_to_update.get('name', '未知'), 
+                    display_name, 
                     data_to_update.get('ip', '未知'), 
                     mac.upper(), 
                     '*' if is_probe_client else (final_status or "未知")
@@ -370,7 +377,6 @@ class ClientManager:
                 iid = self.tree.insert('', 0, values=vals, tags=tags)
                 self.mac_to_iid[mac] = iid
             
-            # 不将探测客户端保存到配置文件
             if not is_probe_client:
                 self._save_config_to_ini()
                 
@@ -412,21 +418,29 @@ class ClientManager:
                     client_data = config[mac]; seq = int(client_data.get('seq', 0))
                     if seq > max_seq: max_seq = seq
                     status = client_data.get('status', '未知')
-                    values = (
-                        seq, 
-                        client_data.get('firmware', '未知'),
-                        client_data.get('name', '未知'), 
-                        client_data.get('ip', '未知'), 
-                        mac_formatted, 
-                        status
-                    )
+                    hostname = client_data.get('name', '未知')
                     
+                    # --- 应用新的样式逻辑到加载过程 ---
                     tags = ()
                     if '在线' in status:
                         tags = ('online_status',)
                     elif '离线' in status:
                         tags = ('offline_status',)
-
+                    elif status and status != '未知': # 如果保存的状态是PXE等
+                        tags = ('intermediate_status',)
+                    # --- 逻辑结束 ---
+                    
+                    display_name = f"{self.CLIENT_SYMBOL} {hostname}".strip()
+                    
+                    values = (
+                        seq, 
+                        client_data.get('firmware', '未知'),
+                        display_name, 
+                        client_data.get('ip', '未知'), 
+                        mac_formatted, 
+                        status
+                    )
+                    
                     iid = self.tree.insert('', 0, values=values, tags=tags)
                     self.mac_to_iid[mac_formatted] = iid
                     
@@ -437,7 +451,6 @@ class ClientManager:
                 self.client_counter = max_seq
         except Exception as e: print(f"Error loading {CONFIG_INI_FILENAME}: {e}")
 
-    # --- 修改: 保存配置文件时跳过PROBE_MAC ---
     def _save_config_to_ini(self):
         config = configparser.ConfigParser(interpolation=None)
         order = []
@@ -448,15 +461,17 @@ class ClientManager:
         for iid in self.tree.get_children(''):
             vals = self.tree.item(iid, 'values')
             if len(vals) == 6:
-                seq, firmware, name, ip, mac, status = vals
-                # 跳过探测客户端
+                seq, firmware, name_with_symbol, ip, mac, status = vals
                 if mac.upper() == PROBE_MAC:
                     continue
+                
+                clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
+
                 last_wim = self.mac_to_last_wim.get(mac, '')
                 config[mac] = {
                     'seq': str(seq), 
                     'firmware': str(firmware),
-                    'name': str(name), 
+                    'name': str(clean_name), 
                     'ip': str(ip), 
                     'status': str(status),
                     'last_wim': last_wim
@@ -536,8 +551,10 @@ class ClientManager:
 
         for iid in ordered_selection:
             vals = self.tree.item(iid, 'values')
-            _, firmware, name, ip, mac, status = vals
-            final_args = args.replace('%IP%', ip).replace('%MAC%', mac).replace('%NAME%', name).replace('%STATUS%', status).replace('%FIRMWARE%', firmware)
+            _, firmware, name_with_symbol, ip, mac, status = vals
+            clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
+            
+            final_args = args.replace('%IP%', ip).replace('%MAC%', mac).replace('%NAME%', clean_name).replace('%STATUS%', status).replace('%FIRMWARE%', firmware)
             if '%IP%' in final_args and ip == '未知':
                 messagebox.showwarning("执行失败", f"客户机 {mac} 没有有效的IP地址，已跳过。", parent=self.root)
                 continue
@@ -574,7 +591,6 @@ class ClientManager:
             self._save_config_to_ini()
     
     def _send_wol_packet(self, mac_address):
-        """发送网络唤醒魔法包到指定的MAC地址。"""
         try:
             mac_bytes = bytes.fromhex(mac_address.replace(':', '').replace('-', ''))
             if len(mac_bytes) != 6:
@@ -590,7 +606,6 @@ class ClientManager:
             return False, str(e)
 
     def _wake_on_lan_command(self):
-        """处理WOL右键菜单命令。"""
         ordered_selection = [item for item in self.selection_order if item in self.tree.selection()]
         if not ordered_selection:
             return
@@ -668,19 +683,14 @@ class ClientManager:
             else:
                 status_text = self.STATUS_MAP['online']
             self._update_ui(mac, {'status': status_text})
-    # 文件: client.py
-# 在 class ClientManager 中添加以下新方法:
-
+    
     def remove_probe_client(self):
-        """将删除探测客户端的操作调度到主GUI线程执行。"""
         def _remove_action():
             probe_mac_upper = PROBE_MAC.upper()
             if probe_mac_upper in self.mac_to_iid:
                 iid = self.mac_to_iid[probe_mac_upper]
                 if self.tree.exists(iid):
                     self.tree.delete(iid)
-                # 从字典中也移除，防止内存泄漏
                 del self.mac_to_iid[probe_mac_upper]
         
-        # 确保UI操作在主线程中执行，以避免线程安全问题
-        self.root.after(100, _remove_action) # 延迟一点点确保显示效果        
+        self.root.after(100, _remove_action)
