@@ -8,13 +8,9 @@ import os
 import subprocess
 import shlex # 用于安全地拆分命令行参数
 import socket
-import time
-import re
 
 # --- 文件名常量 ---
 CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
-# --- 新增: 服务端探测客户端的特殊MAC地址 ---
-PROBE_MAC = '00-11-22-33-44-55'
 
 
 class MenuEditDialog(tk.Toplevel):
@@ -144,12 +140,12 @@ class ClientManager:
         
         self.mac_to_last_wim = {}
 
+        # <-- 修改: 更新状态映射表 -->
         self.STATUS_MAP = {
             'pxe': 'PXE', 'pxemenu': 'PXE菜单', 'ipxe': 'iPXE', 
             'online': '在线', 'transfer_pe': '传输PE',
-            'get_ip': '获取IP', 
-            'msft_online': '在线',
-            'offline': '离线'
+            'get_ip': '获取IP', # 文本缩短以适应UI
+            'msft_online': '在线'
         }
 
         self.selection_order = []
@@ -160,7 +156,6 @@ class ClientManager:
         
         self._setup_treeview_columns()
         self.tree.tag_configure('online_status', foreground='green', font=('Helvetica', 9, 'bold'))
-        self.tree.tag_configure('offline_status', foreground='grey')
         scrollbar = ttk.Scrollbar(self.frame, orient=tk.VERTICAL, command=self.tree.yview); self.tree.configure(yscroll=scrollbar.set)
         
         scrollbar.pack(side="right", fill="y")
@@ -168,129 +163,7 @@ class ClientManager:
 
         self._load_config_from_ini()
         self._setup_bindings()
-        
-        self.stop_heartbeat = threading.Event()
-        self.heartbeat_thread = threading.Thread(target=self._heartbeat_worker, daemon=True)
-        self.heartbeat_thread.start()
 
-    def stop_monitoring(self):
-        """Signals the heartbeat thread to stop."""
-        self.stop_heartbeat.set()
-
-    def _heartbeat_worker(self):
-        """定期检查已进入PE环境的客户端的状态。"""
-        time.sleep(10) # 首次检查前的初始延迟
-        while not self.stop_heartbeat.is_set():
-            try:
-                self._check_clients_liveness()
-            except Exception as e:
-                print(f"心跳检测线程出错: {e}")
-            
-            # 等待20秒进行下一次检查
-            self.stop_heartbeat.wait(20)
-
-    def _ping_ip(self, ip):
-        """发送单个ping包来检查IP是否可达，超时时间为1秒。"""
-        if not ip or ip == '未知':
-            return False
-        try:
-            param = '-n' if os.name == 'nt' else '-c'
-            timeout_param = '-w' if os.name == 'nt' else '-W'
-            command = ['ping', param, '1', timeout_param, '1000' if os.name == 'nt' else '1', ip]
-            
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                
-            result = subprocess.run(command, capture_output=True, text=True, timeout=1.5, startupinfo=startupinfo)
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return False
-        except Exception as e:
-            print(f"Ping {ip} 时发生错误: {e}")
-            return False
-
-    def _check_clients_liveness(self):
-        """通过 Ping 和 ARP 表检查客户端活动状态并更新UI。"""
-        live_arp_map = self._get_arp_table()
-        updates_to_perform = []
-        
-        all_iids = self.tree.get_children('')
-        if not all_iids:
-            return
-
-        for iid in all_iids:
-            try:
-                current_values = self.tree.item(iid, 'values')
-                if not current_values or len(current_values) < 6: continue
-                _, _, _, current_ip, mac_upper, current_status = current_values
-            except tk.TclError:
-                continue
-
-            is_target_client = self.STATUS_MAP['online'] in current_status or \
-                               self.STATUS_MAP['offline'] in current_status
-
-            if not is_target_client:
-                continue
-
-            last_wim = self.mac_to_last_wim.get(mac_upper, '')
-            if not last_wim:
-                continue
-            
-            is_online = False
-            arp_ip = live_arp_map.get(mac_upper)
-            new_ip = current_ip
-
-            if arp_ip:
-                is_online = True
-                new_ip = arp_ip
-            elif self._ping_ip(current_ip):
-                is_online = True
-            
-            update_data = {}
-            if is_online:
-                new_status = f"{self.STATUS_MAP['online']} [{last_wim}]"
-                if new_ip != current_ip or new_status != current_status:
-                    update_data = {'mac': mac_upper, 'ip': new_ip, 'status': new_status}
-            else:
-                new_status = f"{self.STATUS_MAP['offline']} [{last_wim}]"
-                if new_status != current_status:
-                    update_data = {'mac': mac_upper, 'status': new_status}
-
-            if update_data:
-                updates_to_perform.append(update_data)
-
-        if updates_to_perform:
-            self.root.after(0, self._apply_ui_updates, updates_to_perform)
-
-    def _apply_ui_updates(self, updates):
-        for data in updates:
-            self._update_ui(data['mac'], data)
-
-    def _get_arp_table(self):
-        """执行 'arp -a' 并返回一个 MAC -> IP 的映射字典。"""
-        arp_map = {}
-        try:
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-            result = subprocess.run(['arp', '-a'], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=5, startupinfo=startupinfo)
-            
-            pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\s\t]+(([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2})")
-            
-            for line in result.stdout.splitlines():
-                match = pattern.search(line)
-                if match:
-                    ip = match.group(1)
-                    mac = match.group(2).replace('-', ':').upper()
-                    arp_map[mac] = ip
-        except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
-            print(f"无法获取ARP表: {e}")
-        return arp_map
-        
     def _setup_bindings(self):
         self.tree.bind('<<TreeviewSelect>>', self._on_selection_change)
         self.tree.bind("<Button-3>", self._show_context_menu)
@@ -312,68 +185,32 @@ class ClientManager:
         self.tree.column('mac', width=130, anchor=tk.W)
         self.tree.column('status', width=160, anchor=tk.W)
 
-    # --- 修改: 添加对PROBE_MAC的特殊处理 ---
     def _update_ui(self, mac, data_to_update):
         def update_action():
-            is_probe_client = (mac.upper() == PROBE_MAC)
-
             final_status = data_to_update.get('status', None)
-            
-            # 探测客户端无特殊颜色状态
-            tags = ()
-            if final_status and not is_probe_client:
-                if '在线' in final_status:
-                    tags = ('online_status',)
-                elif '离线' in final_status:
-                    tags = ('offline_status',)
-            
+            tags = ('online_status',) if final_status and '在线' in final_status else ()
             if mac in self.mac_to_iid:
-                # 更新现有条目
                 iid = self.mac_to_iid[mac]
-                if not self.tree.exists(iid):
-                    if mac in self.mac_to_iid: del self.mac_to_iid[mac]
-                    return
-
                 vals = list(self.tree.item(iid, 'values'))
-                
-                # 首先更新通用字段
                 if 'firmware' in data_to_update: vals[1] = data_to_update['firmware']
                 if 'name' in data_to_update: vals[2] = data_to_update['name']
                 if 'ip' in data_to_update: vals[3] = data_to_update['ip']
                 if final_status: vals[5] = final_status
                 vals[4] = mac.upper()
-
-                # 如果是探测客户端，则覆盖特定字段
-                if is_probe_client:
-                    vals[0] = '*'
-                    vals[1] = '*'
-                    vals[2] = 'DHCP探测'
-                    vals[5] = '*'
-                
                 self.tree.item(iid, values=tuple(vals), tags=tags)
             else:
-                # 插入新条目
-                seq = '*' if is_probe_client else self.client_counter + 1
-                
+                self.client_counter += 1
                 vals = (
-                    seq, 
-                    '*' if is_probe_client else data_to_update.get('firmware', '未知'),
-                    'DHCP探测' if is_probe_client else data_to_update.get('name', '未知'), 
+                    self.client_counter, 
+                    data_to_update.get('firmware', '未知'),
+                    data_to_update.get('name', '未知'), 
                     data_to_update.get('ip', '未知'), 
                     mac.upper(), 
-                    '*' if is_probe_client else (final_status or "未知")
+                    final_status or "未知"
                 )
-
-                if not is_probe_client:
-                    self.client_counter += 1
-
                 iid = self.tree.insert('', 0, values=vals, tags=tags)
                 self.mac_to_iid[mac] = iid
-            
-            # 不将探测客户端保存到配置文件
-            if not is_probe_client:
-                self._save_config_to_ini()
-                
+            self._save_config_to_ini()
         self.root.after(0, update_action)
 
     def _on_selection_change(self, event):
@@ -411,22 +248,15 @@ class ClientManager:
                     mac_formatted = mac.replace(":", "-").upper()
                     client_data = config[mac]; seq = int(client_data.get('seq', 0))
                     if seq > max_seq: max_seq = seq
-                    status = client_data.get('status', '未知')
                     values = (
                         seq, 
                         client_data.get('firmware', '未知'),
                         client_data.get('name', '未知'), 
                         client_data.get('ip', '未知'), 
                         mac_formatted, 
-                        status
+                        client_data.get('status', '未知')
                     )
-                    
-                    tags = ()
-                    if '在线' in status:
-                        tags = ('online_status',)
-                    elif '离线' in status:
-                        tags = ('offline_status',)
-
+                    tags = ('online_status',) if '在线' in values[5] else ()
                     iid = self.tree.insert('', 0, values=values, tags=tags)
                     self.mac_to_iid[mac_formatted] = iid
                     
@@ -437,7 +267,6 @@ class ClientManager:
                 self.client_counter = max_seq
         except Exception as e: print(f"Error loading {CONFIG_INI_FILENAME}: {e}")
 
-    # --- 修改: 保存配置文件时跳过PROBE_MAC ---
     def _save_config_to_ini(self):
         config = configparser.ConfigParser(interpolation=None)
         order = []
@@ -449,9 +278,6 @@ class ClientManager:
             vals = self.tree.item(iid, 'values')
             if len(vals) == 6:
                 seq, firmware, name, ip, mac, status = vals
-                # 跳过探测客户端
-                if mac.upper() == PROBE_MAC:
-                    continue
                 last_wim = self.mac_to_last_wim.get(mac, '')
                 config[mac] = {
                     'seq': str(seq), 
@@ -651,11 +477,13 @@ class ClientManager:
             status_text = f"{self.STATUS_MAP['transfer_pe']} [{os.path.basename(filename)}]"
             self._update_ui(mac, {'status': status_text})
 
+    # <-- 修改: 更新此函数以设置新的中间状态 -->
     def handle_file_transfer_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
         if mac and filename.lower().endswith('.wim'):
             basename = os.path.basename(filename)
             self.mac_to_last_wim[mac] = basename
+            # 将状态设置为 "获取IP [wim文件名]"
             status_text = f"{self.STATUS_MAP['get_ip']} [{basename}]"
             self._update_ui(mac, {'status': status_text})
 
@@ -668,19 +496,3 @@ class ClientManager:
             else:
                 status_text = self.STATUS_MAP['online']
             self._update_ui(mac, {'status': status_text})
-    # 文件: client.py
-# 在 class ClientManager 中添加以下新方法:
-
-    def remove_probe_client(self):
-        """将删除探测客户端的操作调度到主GUI线程执行。"""
-        def _remove_action():
-            probe_mac_upper = PROBE_MAC.upper()
-            if probe_mac_upper in self.mac_to_iid:
-                iid = self.mac_to_iid[probe_mac_upper]
-                if self.tree.exists(iid):
-                    self.tree.delete(iid)
-                # 从字典中也移除，防止内存泄漏
-                del self.mac_to_iid[probe_mac_upper]
-        
-        # 确保UI操作在主线程中执行，以避免线程安全问题
-        self.root.after(100, _remove_action) # 延迟一点点确保显示效果        
