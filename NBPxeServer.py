@@ -1175,6 +1175,9 @@ class ConfigWindow(tk.Toplevel):
                 except (tk.TclError, ValueError): temp_settings[key] = 0 if isinstance(var, tk.IntVar) else ""
         SETTINGS.update(temp_settings); save_config_to_ini(); self.destroy()
 
+# 文件: NBPxeServer.py
+# 请用这段代码替换原文件中的整个 class NBpxeApp
+
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
@@ -1190,21 +1193,43 @@ class NBpxeApp:
         paned_window = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
         paned_window.pack(fill="both", expand=True, pady=5)
 
-        log_frame = ttk.LabelFrame(paned_window, text="实时日志", padding="10")
-        paned_window.add(log_frame, weight=1)
+        client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
+        global client_manager
+        client_manager = ClientManager(client_list_frame)
+        client_manager.pack(fill="both", expand=True)
+        
+        # --- 修改开始: 创建带有自定义多色标题的日志窗格 ---
+
+        # 1. 创建一个标题带空格的LabelFrame，为自定义标签腾出位置
+        log_frame = ttk.LabelFrame(paned_window, text=" ", padding="10")
 
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=5)
         self.log_text.pack(fill="both", expand=True)
         self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
         self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
-
-        client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
-        paned_window.add(client_list_frame, weight=3)
-
-        global client_manager
-        client_manager = ClientManager(client_list_frame)
-        client_manager.pack(fill="both", expand=True)
         
+        # 2. 获取背景色，以便让自定义标签的背景与之融合
+        #    注意：这在某些复杂主题下可能不完美，但对多数情况有效
+        style = ttk.Style()
+        bg_color = style.lookup('TFrame', 'background')
+
+        # 3. 创建两个Label作为标题，并设置背景色
+        title_part1 = ttk.Label(log_frame, text="实时日志", background=bg_color)
+        title_part2 = ttk.Label(log_frame, text=" (⇕ 可拖动边框调整大小)", foreground="grey", background=bg_color)
+        
+        # 4. 使用 place() 将它们精确地放到标题位置
+        #    y=-9 左右的值通常可以将标签的中心对准边框
+        title_part1.place(x=8, y=-9)
+        #    为了确定第二部分的x坐标，我们先强制更新UI获取第一部分的宽度
+        title_part1.update_idletasks() 
+        part1_width = title_part1.winfo_width()
+        title_part2.place(x=8 + part1_width, y=-9)
+
+        # --- 修改结束 ---
+
+        paned_window.add(client_list_frame, weight=3)
+        paned_window.add(log_frame, weight=1)
+
         control_frame = ttk.Frame(main_frame, padding="5")
         control_frame.pack(fill="x")
         self.create_control_widgets(control_frame)
@@ -1226,6 +1251,112 @@ class NBpxeApp:
         ttk.Button(parent, text="停止所有服务", command=stop_services).pack(side="left", padx=5, pady=5)
         ttk.Button(parent, text="修改配置", command=lambda: ConfigWindow(self.root)).pack(side="left", padx=5, pady=5)
         ttk.Button(parent, text="重置配置文件", command=self.reset_ini_file).pack(side="left", padx=(15, 5), pady=5)
+        ttk.Button(parent, text="退出程序", command=self.on_closing).pack(side="right", padx=5, pady=5)
+
+    def reset_ini_file(self):
+        if messagebox.askyesno("重置配置?", f"您确定要删除 '{INI_FILENAME}' 并恢复为默认设置吗?\n程序将在之后关闭，请手动重启。"):
+            stop_services()
+            try:
+                if os.path.exists(INI_FILENAME): os.remove(INI_FILENAME)
+                create_default_ini(); load_config_from_ini()
+                messagebox.showinfo("重置成功", f"配置文件已重置。请重启程序应用更改。"); self.on_closing(force=True)
+            except Exception as e: messagebox.showerror("重置失败", f"无法重置配置文件: {e}")
+
+    def on_closing(self, force=False):
+        if force or messagebox.askokcancel("退出", "您确定要退出 NBPXE 服务器吗？"):
+            if client_manager:
+                client_manager.stop_monitoring()
+            stop_services()
+            self.root.destroy()
+    
+    def process_log_queue(self):
+        try:
+            while True:
+                msg, level = log_queue.get_nowait()
+                tag = level.lower() if level in ['WARNING', 'ERROR'] else ''
+                self.log_text.config(state='normal')
+                self.log_text.insert(tk.END, msg + '\n', tag)
+                self.log_text.see(tk.END)
+                self.log_text.config(state='disabled')
+        except queue.Empty: pass
+        finally:
+            self.root.after(100, self.process_log_queue)
+
+    def update_status_display(self):
+        is_dhcp_running = dhcp_thread and dhcp_thread.is_alive()
+        is_proxy_running = proxy_thread and proxy_thread.is_alive()
+        if SETTINGS.get('dhcp_enabled'):
+            if is_dhcp_running and is_proxy_running:
+                mode = SETTINGS.get('dhcp_mode', 'proxy').upper()
+                self.status_labels["DHCP"].config(text=f"● 运行中 ({mode})", foreground="green")
+            else: self.status_labels["DHCP"].config(text="■ 未启动", foreground="orange")
+        else: self.status_labels["DHCP"].config(text="■ 已禁用", foreground="grey")
+        is_tftp_running = tftp_thread and tftp_thread.is_alive()
+        if SETTINGS.get('tftp_enabled'):
+            text, color = ("● 运行中", "green") if is_tftp_running else ("■ 未启动", "orange")
+            self.status_labels["TFTP"].config(text=text, foreground=color)
+        else: self.status_labels["TFTP"].config(text="■ 已禁用", foreground="grey")
+        is_http_running = http_thread and http_thread.is_alive()
+        if SETTINGS.get('http_enabled'):
+            text, color = ("● 运行中", "green") if is_http_running else ("■ 未启动", "orange")
+            self.status_labels["HTTP"].config(text=text, foreground=color)
+        else: self.status_labels["HTTP"].config(text="■ 已禁用", foreground="grey")
+        if SETTINGS.get('smb_enabled'):
+            if is_smb_share_active(SETTINGS.get('smb_share_name')):
+                self.status_labels["SMB"].config(text="● 共享中", foreground="green")
+            else: self.status_labels["SMB"].config(text="■ 未共享", foreground="orange")
+        else: self.status_labels["SMB"].config(text="■ 已禁用", foreground="grey")
+        self.root.after(1000, self.update_status_display)
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NBPXE 服务器 20250905")
+        self.root.geometry("800x600")
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.pack(fill="both", expand=True)
+
+        status_frame = ttk.LabelFrame(main_frame, text="服务状态", padding="10")
+        status_frame.pack(fill="x", pady=5)
+        self.create_status_widgets(status_frame)
+
+        paned_window = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
+        paned_window.pack(fill="both", expand=True, pady=5)
+
+        client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
+        paned_window.add(client_list_frame, weight=3)
+
+        global client_manager
+        client_manager = ClientManager(client_list_frame)
+        client_manager.pack(fill="both", expand=True)
+        
+        log_frame = ttk.LabelFrame(paned_window, text="实时日志 ⇕ 可拖动调整 ⇕", padding="10")
+        paned_window.add(log_frame, weight=1)
+
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=5)
+        self.log_text.pack(fill="both", expand=True)
+        self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
+        self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
+
+        control_frame = ttk.Frame(main_frame, padding="5")
+        control_frame.pack(fill="x")
+        self.create_control_widgets(control_frame)
+        
+        self.process_log_queue()
+        self.update_status_display()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def create_status_widgets(self, parent):
+        self.status_labels = {}
+        services = ["DHCP", "TFTP", "HTTP", "SMB"]
+        for i, service in enumerate(services):
+            ttk.Label(parent, text=f"{service}:").grid(row=0, column=i*2, sticky="w", padx=(0, 5))
+            self.status_labels[service] = ttk.Label(parent, text="■ 已停止", foreground="red", font=('Helvetica', 9, 'bold'))
+            self.status_labels[service].grid(row=0, column=i*2+1, sticky="w", padx=(0, 20))
+    
+    def create_control_widgets(self, parent):
+        ttk.Button(parent, text="启动 / 重启服务", command=start_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="停止所有服务", command=stop_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="修改配置", command=lambda: ConfigWindow(self.root)).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="重置配置", command=self.reset_ini_file).pack(side="left", padx=(15, 5), pady=5)
         ttk.Button(parent, text="退出程序", command=self.on_closing).pack(side="right", padx=5, pady=5)
 
     def reset_ini_file(self):
