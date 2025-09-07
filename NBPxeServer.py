@@ -689,22 +689,43 @@ def run_tftp_server(cfg, stop_evt):
                 elif opcode == 2:
                     log_message(f"TFTP: [WRITE] 收到来自 {client_addr} 对 '{filename}' 的写入请求。", "INFO")
                     
-                    safe_filename = os.path.basename(filename)
-                    if not safe_filename or safe_filename in ('.', '..'):
+                    # 清理文件名：删除前导斜杠并规范化分隔符
+                    # 这确保路径被视为相对于 tftp_root
+                    sanitized_filename = filename.replace('\\', '/').lstrip('/')
+                    
+                    # 检查无效的路径组件
+                    if '..' in sanitized_filename.split('/'):
+                        log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的非法路径组件 '..' in '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+
+                    if not sanitized_filename or sanitized_filename in ('.', '..'):
                         log_message(f"TFTP: [拒绝] 收到来自 {client_addr} 的无效文件名 '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 4) + b'Illegal TFTP operation\x00', client_addr); return
                     
-                    filepath = os.path.join(tftp_root, safe_filename)
+                    filepath = os.path.join(tftp_root, sanitized_filename)
+                    
+                    # 安全检查：确保最终路径在 tftp_root 内
+                    # os.path.realpath 解析符号链接和 '..' 组件
                     if not os.path.realpath(filepath).startswith(os.path.realpath(tftp_root)):
                         log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的目录遍历尝试 '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
 
                     if os.path.exists(filepath):
-                        log_message(f"TFTP: [拒绝] 来自 {client_addr} 的上传请求，文件 '{safe_filename}' 已存在。", "WARNING")
+                        log_message(f"TFTP: [拒绝] 来自 {client_addr} 的上传请求，文件 '{sanitized_filename}' 已存在。", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 6) + b'File already exists\x00', client_addr); return
                     
+                    # 如果目标目录不存在，则创建它
+                    try:
+                        dir_path = os.path.dirname(filepath)
+                        if not os.path.exists(dir_path):
+                            os.makedirs(dir_path)
+                            log_message(f"TFTP: 已为 {client_addr} 创建目录 '{dir_path}'", "INFO")
+                    except OSError as e:
+                        log_message(f"TFTP: [拒绝] 无法为 '{sanitized_filename}' 创建目录: {e}", "ERROR")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+
                     tsock.sendto(struct.pack('!HH', 4, 0), client_addr)
-                    log_message(f"TFTP: 准备从 {client_addr} 接收文件 '{safe_filename}'")
+                    log_message(f"TFTP: 准备从 {client_addr} 接收文件 '{sanitized_filename}'")
                     
                     expected_block_num = 1
                     total_bytes_written = 0
@@ -724,7 +745,7 @@ def run_tftp_server(cfg, stop_evt):
                                 tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
                                 expected_block_num = (expected_block_num + 1) % 65536
                                 if len(chunk) < 512:
-                                    log_message(f"TFTP: [写入成功] 文件 '{safe_filename}' ({total_bytes_written}字节) 已从 {client_addr} 接收完毕。")
+                                    log_message(f"TFTP: [写入成功] 文件 '{sanitized_filename}' ({total_bytes_written}字节) 已从 {client_addr} 接收完毕。")
                                     transfer_successful = True
                                     break
                             elif block_num < expected_block_num:

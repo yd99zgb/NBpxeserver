@@ -443,6 +443,7 @@ class ClientManager:
         self.menu_config = []
         if not os.path.exists(CONFIG_INI_FILENAME):
             self.menu_config.append({'name': '远程', 'path': 'bin\\tvnviewer.exe', 'args': '%IP%'})
+            self.menu_config.append({'name': 'NetCopy网络同传', 'path': 'cmd', 'args': '/c echo startup.bat netcopy| bin\\nc64.exe -t %IP% 6086'})
             self._save_config_to_ini() 
             return
 
