@@ -1,5 +1,3 @@
-### 文件 2: `client.py` (完整最终版)
-
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading

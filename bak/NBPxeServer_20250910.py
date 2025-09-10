@@ -68,110 +68,6 @@ def get_mac_address():
 def get_all_ips():
     ips = ['127.0.0.1']
     try:
-        # 使用您最初文件中的方法来获取所有IP地址
-        _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
-        ips.extend(ip_list)
-    except socket.gaierror:
-        # 保持纯本地，不进行任何网络连接尝试
-        pass
-
-    # 定义一个已知虚拟网卡/特殊用途IP地址前缀的“黑名单”
-    # VMWare, VirtualBox, Hyper-V, WSL, Docker等常用网段
-    VIRTUAL_NET_PREFIXES = [
-        '192.168.56.', '192.168.64.', '192.168.80.', '192.168.88.', 
-        '192.168.122.', '192.168.233.', '192.168.48.', '192.168.177.',
-        '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.',
-        '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.',
-        '172.29.', '172.30.', '172.31.'
-    ]
-
-    def sort_key(ip):
-        """
-        排序函数，严格按照您的要求：
-        1. 虚拟网卡和特殊地址优先级最低。
-        2. 然后按标准私有网段排序。
-        """
-        # 优先级 1: 检查是否为特殊地址或在“黑名单”中
-        if ip in ['127.0.0.1']:
-            return 100 # 最低优先级
-        
-        for prefix in VIRTUAL_NET_PREFIXES:
-            if ip.startswith(prefix):
-                return 50 # 虚拟网卡，次低优先级
-
-        # 优先级 2: 标准私有网段排序 (物理网卡)
-        if ip.startswith('192.168.'):
-            return 0 # 最高优先级
-        elif ip.startswith('172.'):
-            try:
-                if 16 <= int(ip.split('.')[1]) <= 31:
-                    return 1 # 次高优先级
-            except (ValueError, IndexError):
-                pass
-        elif ip.startswith('10.'):
-            return 2 # 普通优先级
-        
-        # 其他所有IP（如公网IP）优先级较低
-        return 90
-
-    # 使用排序键对去重后的IP列表进行排序，并为GUI添加 '0.0.0.0' 选项
-    # 0.0.0.0 (所有网卡) 作为一个特殊选项，手动添加到列表最前面
-    sorted_ips = sorted(list(set(ips)), key=sort_key)
-    if '0.0.0.0' not in sorted_ips:
-        sorted_ips.append('0.0.0.0') # 确保它存在，但排序后会在后面
-        
-    return sorted(list(set(ips)), key=sort_key)
-    ips = ['127.0.0.1', '0.0.0.0'] # 0.0.0.0 仅用于GUI显示，需要被排到后面
-    try:
-        _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
-        ips.extend(ip_list)
-    except socket.gaierror:
-        pass
-
-    # 已知的虚拟网卡/特殊用途IP地址前缀列表
-    # VMWare, VirtualBox, Hyper-V, WSL, Docker等常用网段
-    VIRTUAL_NET_PREFIXES = [
-        '192.168.56.', '192.168.64.', '192.168.80.', '192.168.88.', 
-        '192.168.122.', '192.168.233.',
-        '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.',
-        '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.',
-        '172.29.', '172.30.', '172.31.'
-    ]
-
-    def sort_key(ip):
-        """
-        排序函数，严格按照您的要求：
-        1. 虚拟网卡和特殊地址优先级最低。
-        2. 然后按标准私有网段排序。
-        """
-        # 优先级 1: 检查是否为特殊地址或已知虚拟网卡
-        if ip in ['0.0.0.0', '127.0.0.1']:
-            return 100 # 最低优先级
-        
-        for prefix in VIRTUAL_NET_PREFIXES:
-            if ip.startswith(prefix):
-                return 50 # 虚拟网卡，次低优先级
-
-        # 优先级 2: 标准私有网段排序
-        if ip.startswith('192.168.'):
-            return 0 # 最高优先级
-        elif ip.startswith('172.'):
-            try:
-                # 确保是 172.16.0.0 - 172.31.255.255 范围
-                if 16 <= int(ip.split('.')[1]) <= 31:
-                    return 1 # 次高优先级
-            except (ValueError, IndexError):
-                pass
-        elif ip.startswith('10.'):
-            return 2 # 普通优先级
-        
-        # 其他所有IP（如公网IP）优先级较低
-        return 90
-
-    # 使用新的排序键对去重后的IP列表进行排序
-    return sorted(list(set(ips)), key=sort_key)
-    ips = ['127.0.0.1']
-    try:
         _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
         ips.extend(ip_list)
     except socket.gaierror:
@@ -220,7 +116,7 @@ def create_default_ini():
     config['SMB'] = {'enabled': 'false', 'share_name': 'pxe', 'permissions': 'read'}
     config['PXEMenuBIOS'] = {
         'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
-        'prompt': 'Press F8 for BIOS Boot Menu',
+        'prompt': 'BIOS Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (BIOS), ipxe.bios, 8000, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
@@ -228,21 +124,10 @@ Boot from Local Disk, , 0000, 0.0.0.0
     }
     config['PXEMenuUEFI'] = {
         'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
-        'prompt': 'Press F8 for UEFI Boot Menu',
+        'prompt': 'UEFI Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (UEFI), ipxe.efi, 8002, {best_ip}
 Windows PE (UEFI), boot/bootmgfw.efi, 8003, {best_ip}
-Boot from Local Disk, , 0000, 0.0.0.0
-'''
-    }
-    config['PXEMenuIPXE'] = {
-        'enabled': 'true', 
-        'timeout': '2', 
-        'randomize_timeout': 'false',
-        'prompt': 'Press F8 for iPXE Boot Menu ...',
-        'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
-iPXE (iPXEFM_Menu), ipxeboot.txt, 8001, {best_ip}
-iPXE ISO, newbeeplus.iso, 8002, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
@@ -262,7 +147,7 @@ def load_config_from_ini():
         log_message(f"配置文件 '{INI_FILENAME}' 解析失败: {e}", "ERROR"); return False
     try:
         g, d, fs, b, s = config['General'], config['DHCP'], config['FileServer'], config['BootFiles'], config['SMB']
-        pm_bios, pm_uefi, pm_ipxe = config['PXEMenuBIOS'], config['PXEMenuUEFI'], config['PXEMenuIPXE']
+        pm_bios, pm_uefi = config['PXEMenuBIOS'], config['PXEMenuUEFI']
         o = config['DHCPOptions']
         SETTINGS = {
             'listen_ip': g.get('listen_ip', '0.0.0.0'), 'server_ip': g.get('server_ip', get_all_ips()[0]),
@@ -285,11 +170,6 @@ def load_config_from_ini():
             'pxe_menu_uefi_randomize_timeout': pm_uefi.getboolean('randomize_timeout', False),
             'pxe_menu_uefi_prompt': pm_uefi.get('prompt'),
             'pxe_menu_uefi_items': pm_uefi.get('items'),
-            'pxe_menu_ipxe_enabled': pm_ipxe.getboolean('enabled'),
-            'pxe_menu_ipxe_timeout': pm_ipxe.getint('timeout'),
-            'pxe_menu_ipxe_randomize_timeout': pm_ipxe.getboolean('randomize_timeout', False),
-            'pxe_menu_ipxe_prompt': pm_ipxe.get('prompt'),
-            'pxe_menu_ipxe_items': pm_ipxe.get('items'),
             'dhcp_options_enabled': o.getboolean('enabled', False),
             'dhcp_options_text': o.get('options_text', ''),
         }
@@ -300,9 +180,9 @@ def load_config_from_ini():
 
 def save_config_to_ini():
     try:
-        g, d, fs, b, s, pm_bios, pm_uefi, pm_ipxe, o = (config['General'], config['DHCP'], config['FileServer'],
-                                                  config['BootFiles'], config['SMB'], config['PXEMenuBIOS'],
-                                                  config['PXEMenuUEFI'], config['PXEMenuIPXE'], config['DHCPOptions'])
+        g, d, fs, b, s, pm_bios, pm_uefi, o = (config['General'], config['DHCP'], config['FileServer'],
+                                              config['BootFiles'], config['SMB'], config['PXEMenuBIOS'],
+                                              config['PXEMenuUEFI'], config['DHCPOptions'])
         g['listen_ip'], g['server_ip'] = SETTINGS['listen_ip'], SETTINGS['server_ip']
         d['enabled'], d['mode'] = str(SETTINGS['dhcp_enabled']).lower(), SETTINGS['dhcp_mode']
         d['pool_start'], d['pool_end'] = SETTINGS['ip_pool_start'], SETTINGS['ip_pool_end']
@@ -319,9 +199,6 @@ def save_config_to_ini():
         pm_uefi['enabled'], pm_uefi['timeout'] = str(SETTINGS['pxe_menu_uefi_enabled']).lower(), str(SETTINGS['pxe_menu_uefi_timeout'])
         pm_uefi['randomize_timeout'] = str(SETTINGS['pxe_menu_uefi_randomize_timeout']).lower()
         pm_uefi['prompt'], pm_uefi['items'] = SETTINGS['pxe_menu_uefi_prompt'], SETTINGS['pxe_menu_uefi_items']
-        pm_ipxe['enabled'], pm_ipxe['timeout'] = str(SETTINGS['pxe_menu_ipxe_enabled']).lower(), str(SETTINGS['pxe_menu_ipxe_timeout'])
-        pm_ipxe['randomize_timeout'] = str(SETTINGS['pxe_menu_ipxe_randomize_timeout']).lower()
-        pm_ipxe['prompt'], pm_ipxe['items'] = SETTINGS['pxe_menu_ipxe_prompt'], SETTINGS['pxe_menu_ipxe_items']
         o['enabled'] = str(SETTINGS['dhcp_options_enabled']).lower()
         o['options_text'] = SETTINGS['dhcp_options_text']
         with open(INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
@@ -395,28 +272,53 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     except Exception as e:
         log_message(f"DHCP: 解析请求包失败: {e}", "ERROR"); return None
 
-    user_class = opts.get(77, b'')
-    vendor_class = opts.get(60, b'')
-    is_ipxe_client = b'iPXE' in user_class or b'iPXE' in vendor_class
-    
-    if 'MSFT 5.0' in vendor_class.decode(errors='ignore'):
-        hostname = opts.get(12, b'').decode(errors='ignore').strip()
+    vendor_class = opts.get(60, b'').decode(errors='ignore')
+    if vendor_class:
+        log_message(f"DHCP: 客户端 {client_mac} Vendor Class Identifier = '{vendor_class}'")
+
+    if 'MSFT 5.0' in vendor_class:
+        log_message(f"DHCP: 客户端 {client_mac} (Windows 获取IP) 请求地址。")
+        
+        hostname = None
+        if 12 in opts:
+            try:
+                hostname = opts[12].decode(errors='ignore').strip()
+                if hostname:
+                    log_message(f"DHCP: 客户端 {client_mac} 报告主机名: {hostname}")
+            except Exception:
+                pass
+        
         if client_manager:
             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'msft_online', hostname=hostname)
+        
         resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
         if resp_msg_type == 0: return None
+        
         resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
-        resp_pkt += req_pkt[12:16] + socket.inet_aton(assigned_ip) + b'\x00\x00\x00\x00'
-        resp_pkt += req_pkt[24:28] + chaddr + (b'\x00' * (64 + 128)) + b'\x63\x82\x53\x63'
-        resp_pkt += bytes([53, 1, resp_msg_type]) + bytes([54, 4]) + socket.inet_aton(cfg['server_ip'])
+        resp_pkt += req_pkt[12:16]
+        resp_pkt += socket.inet_aton(assigned_ip)
+        resp_pkt += b'\x00\x00\x00\x00'
+        resp_pkt += req_pkt[24:28]
+        resp_pkt += chaddr
+        resp_pkt += b'\x00' * (64 + 128)
+        resp_pkt += b'\x63\x82\x53\x63'
+
+        resp_pkt += bytes([53, 1, resp_msg_type])
+        resp_pkt += bytes([54, 4]) + socket.inet_aton(cfg['server_ip'])
+        
         if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
             resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
             resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
             resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
             resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
+
         if cfg.get('dhcp_options_enabled', False):
-            custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(cfg.get('dhcp_options_text', ''))
-            if custom_options_bytes: resp_pkt += custom_options_bytes
+            options_text = cfg.get('dhcp_options_text', '')
+            if options_text:
+                custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(options_text)
+                if custom_options_bytes:
+                    resp_pkt += custom_options_bytes
+        
         resp_pkt += b'\xff'
         return bytes(resp_pkt)
 
@@ -425,31 +327,21 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         arch_code = struct.unpack('!H', opts[93][:2])[0]
         arch_name = ARCH_TYPES.get(arch_code, 'bios')
     
+    firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
+
     if client_manager:
-        firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
         client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxe', firmware_type=firmware_display)
-    
-    # --- 最终、统一的菜单逻辑 ---
-    
-    # 步骤 1: 根据客户端类型，选择正确的菜单配置前缀
-    if is_ipxe_client:
-        menu_cfg_key_prefix = 'pxe_menu_ipxe'
-        log_message(f"DHCP: iPXE 客户端 {client_mac} 已识别，使用 iPXE 菜单配置", "DEBUG")
-    else:
-        menu_cfg_key_prefix = 'pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios'
 
     has_hostname = 12 in opts
+
+    menu_cfg_key_prefix = 'pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios'
     menu_enabled = cfg.get(f'{menu_cfg_key_prefix}_enabled', False)
     final_server_ip = cfg['server_ip']
     boot_file = ""
     option43 = b''
     is_menu_offer = False
-
-    resp_msg_type = 5 if is_proxy_req else (2 if msg_type == 1 else (5 if msg_type == 3 else 0))
-    if resp_msg_type == 0: return None
-
-    # 步骤 2: 执行统一的菜单处理流程
     selected_item_type = None
+    selected_item_layer = 0
     if 43 in opts:
         pxe_opts = opts[43]
         i = 0
@@ -458,63 +350,70 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
             if sub_code == 255: break
             if sub_code == 71 and sub_len >= 4:
                 selected_item_type = struct.unpack('!H', pxe_opts[i+2:i+4])[0]
+                selected_item_layer = struct.unpack('!H', pxe_opts[i+4:i+6])[0] if sub_len >= 4 else 0
                 break
             i += 2 + sub_len
-
     if selected_item_type is not None:
         menu_items_str = cfg.get(f'{menu_cfg_key_prefix}_items', '')
         for line in menu_items_str.strip().splitlines():
-            parts = [p.strip() for p in line.strip().split(',', 3) if p]
+            line = line.strip()
+            if not line or line.startswith(';'): continue
+            parts = [p.strip() for p in line.split(',', 3)]
             if len(parts) == 4:
                 try:
                     if int(parts[2], 16) == selected_item_type:
                         boot_file = parts[1]
-                        final_server_ip = parts[3] if parts[3] and parts[3] != '0.0.0.0' else cfg['server_ip']
+                        if parts[3] and parts[3] != '0.0.0.0':
+                            final_server_ip = parts[3]
                         break
                 except ValueError: continue
-        log_message(f"DHCP: 客户端 {client_mac} 已选择菜单项 {selected_item_type:04x}, 提供文件: '{boot_file or '本地启动'}'")
-        option43 = bytes([71, 4]) + selected_item_type.to_bytes(2, 'big') + (0).to_bytes(2, 'big') + b'\xff'
-    
-    elif menu_enabled and (not has_hostname or menu_cfg_key_prefix in ['pxe_menu_bios', 'pxe_menu_uefi']):
+        log_message(f"DHCP: 客户端 {client_mac} 已选择菜单项 {selected_item_type:04x}, 提供文件: '{boot_file or '本地启动'}' an Server: {final_server_ip}")
+        option43_ack_payload = bytearray()
+        boot_item_val = selected_item_type.to_bytes(2, 'big') + selected_item_layer.to_bytes(2, 'big')
+        option43_ack_payload += bytes([71, len(boot_item_val)]) + boot_item_val
+        option43_ack_payload += b'\xff'
+        option43 = bytes(option43_ack_payload)
+
+    elif menu_enabled and b'iPXE' not in opts.get(77, b'') and not has_hostname:
         is_menu_offer = True
         menu_config = {
-            'enabled': True, 'timeout': cfg.get(f'{menu_cfg_key_prefix}_timeout', 10),
-            'randomize_timeout': cfg.get(f'{menu_cfg_key_prefix}_randomize_timeout', False),
-            'prompt': cfg.get(f'{menu_cfg_key_prefix}_prompt', 'Boot Menu'),
-            'items': cfg.get(f'{menu_cfg_key_prefix}_items', '')
+            'enabled': True, 'arch': arch_name.upper(),
+            'timeout': cfg[f'{menu_cfg_key_prefix}_timeout'],
+            'randomize_timeout': cfg[f'{menu_cfg_key_prefix}_randomize_timeout'],
+            'prompt': cfg[f'{menu_cfg_key_prefix}_prompt'],
+            'items': cfg[f'{menu_cfg_key_prefix}_items']
         }
         option43 = build_pxe_option43_menu(menu_config)
-        log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供 '{menu_cfg_key_prefix}' 菜单")
-        if client_manager: client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
-
+        log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供PXE菜单")
+        if client_manager:
+            client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
     else:
-        # 如果菜单被禁用，则使用对应的后备文件
-        if is_ipxe_client:
-            boot_file = cfg.get('bootfile_ipxe', '')
-        else:
-            boot_file = cfg.get(f"bootfile_{arch_name}", cfg['bootfile_bios'])
-        log_message(f"DHCP: 为 {client_mac} 提供默认文件: '{boot_file}'")
-    
-    # --- 构建数据包 ---
+        if has_hostname:
+            log_message(f"DHCP: 客户端 {client_mac} (Hostname: {opts[12].decode(errors='ignore')}) 请求IP, 跳过PXE菜单。")
+
+        is_ipxe_client = b'iPXE' in opts.get(77, b'')
+        boot_file = cfg['bootfile_ipxe'] if is_ipxe_client else cfg.get(f"bootfile_{arch_name}", cfg['bootfile_bios'])
+        log_message(f"DHCP: 为 {client_mac} 直接启动, 提供文件: '{boot_file}'")
+        if is_ipxe_client and client_manager:
+             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'ipxe')
+
+    resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
+    if resp_msg_type == 0: return None
+
     resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
-    resp_pkt += req_pkt[12:16] + socket.inet_aton(assigned_ip)
+    resp_pkt += req_pkt[12:16]
+    resp_pkt += socket.inet_aton(assigned_ip)
     final_server_ip_bytes = socket.inet_aton(final_server_ip)
     siaddr = b'\x00\x00\x00\x00' if is_menu_offer else final_server_ip_bytes
+    resp_pkt += siaddr
+    resp_pkt += req_pkt[24:28] + chaddr + (b'\x00' * 64)
     file_bytes = boot_file.encode('ascii', 'ignore')
-    resp_pkt += siaddr + req_pkt[24:28] + chaddr + (b'\x00' * 64)
     resp_pkt += file_bytes + b'\x00' * (128 - len(file_bytes))
     resp_pkt += b'\x63\x82\x53\x63'
 
-    resp_pkt += bytes([53, 1, resp_msg_type])
-    resp_pkt += bytes([54, 4]) + socket.inet_aton(cfg['server_ip'])
-    resp_pkt += bytes([60, 9]) + b'PXEClient'
+    resp_pkt += bytes([53, 1, resp_msg_type]) + bytes([54, 4]) + socket.inet_aton(cfg['server_ip']) + bytes([60, 9]) + b'PXEClient'
     if 97 in opts: resp_pkt += bytes([97, len(opts[97])]) + opts[97]
     if option43: resp_pkt += bytes([43, len(option43)]) + option43
-    
-    if not is_menu_offer and boot_file:
-        server_ip_str_bytes = final_server_ip.encode('ascii')
-        resp_pkt += bytes([66, len(server_ip_str_bytes)]) + server_ip_str_bytes
-        resp_pkt += bytes([67, len(file_bytes) + 1]) + file_bytes + b'\x00'
     
     if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
         resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
@@ -523,9 +422,13 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
 
     if cfg.get('dhcp_options_enabled', False):
-        custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(cfg.get('dhcp_options_text', ''))
-        if custom_options_bytes: resp_pkt += custom_options_bytes
-    
+        options_text = cfg.get('dhcp_options_text', '')
+        if options_text:
+            custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(options_text)
+            if custom_options_bytes:
+                resp_pkt += custom_options_bytes
+                log_message(f"DHCP: 已为 {client_mac} 添加 {len(custom_options_bytes)} 字节的自定义选项。")
+
     resp_pkt += b'\xff'
     return bytes(resp_pkt)
 
@@ -785,20 +688,33 @@ def run_tftp_server(cfg, stop_evt):
                 
                 elif opcode == 2:
                     log_message(f"TFTP: [WRITE] 收到来自 {client_addr} 对 '{filename}' 的写入请求。", "INFO")
+                    
+                    # 清理文件名：删除前导斜杠并规范化分隔符
+                    # 这确保路径被视为相对于 tftp_root
                     sanitized_filename = filename.replace('\\', '/').lstrip('/')
+                    
+                    # 检查无效的路径组件
                     if '..' in sanitized_filename.split('/'):
                         log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的非法路径组件 '..' in '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+
                     if not sanitized_filename or sanitized_filename in ('.', '..'):
                         log_message(f"TFTP: [拒绝] 收到来自 {client_addr} 的无效文件名 '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 4) + b'Illegal TFTP operation\x00', client_addr); return
+                    
                     filepath = os.path.join(tftp_root, sanitized_filename)
+                    
+                    # 安全检查：确保最终路径在 tftp_root 内
+                    # os.path.realpath 解析符号链接和 '..' 组件
                     if not os.path.realpath(filepath).startswith(os.path.realpath(tftp_root)):
                         log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的目录遍历尝试 '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+
                     if os.path.exists(filepath):
                         log_message(f"TFTP: [拒绝] 来自 {client_addr} 的上传请求，文件 '{sanitized_filename}' 已存在。", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 6) + b'File already exists\x00', client_addr); return
+                    
+                    # 如果目标目录不存在，则创建它
                     try:
                         dir_path = os.path.dirname(filepath)
                         if not os.path.exists(dir_path):
@@ -807,17 +723,21 @@ def run_tftp_server(cfg, stop_evt):
                     except OSError as e:
                         log_message(f"TFTP: [拒绝] 无法为 '{sanitized_filename}' 创建目录: {e}", "ERROR")
                         tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+
                     tsock.sendto(struct.pack('!HH', 4, 0), client_addr)
                     log_message(f"TFTP: 准备从 {client_addr} 接收文件 '{sanitized_filename}'")
+                    
                     expected_block_num = 1
                     total_bytes_written = 0
                     with open(filepath, 'wb') as f:
                         while True:
                             data, addr = tsock.recvfrom(516)
                             if len(data) < 4: continue
+
                             opcode_data, block_num = struct.unpack('!HH', data[:4])
                             if opcode_data == 5: log_message(f"TFTP: [写入中断] 客户端 {addr} 报告错误。", "WARNING"); return
                             if opcode_data != 3 or addr != client_addr: continue
+
                             if block_num == expected_block_num:
                                 chunk = data[4:]
                                 f.write(chunk)
@@ -843,6 +763,7 @@ def run_tftp_server(cfg, stop_evt):
                     client_manager.handle_file_transfer_complete(client_addr[0], filename)
                 elif opcode == 2 and transfer_successful:
                     client_manager.handle_file_upload_complete(client_addr[0], filename)
+            
             if opcode == 2 and filepath and os.path.exists(filepath) and not transfer_successful:
                 try:
                     os.remove(filepath)
@@ -873,10 +794,13 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         fpath = self.translate_path(self.path)
         if not os.path.isfile(fpath): self.send_error(404, "File not found"); return
+        
         filename = os.path.basename(fpath)
         client_ip = self.client_address[0]
+        
         if self.client_manager:
             self.client_manager.handle_file_transfer_start(client_ip, filename)
+        
         transfer_successful = False
         try:
             with open(fpath, 'rb') as f:
@@ -940,7 +864,9 @@ def run_http_server(cfg, stop_evt):
     if not os.path.exists(http_root_dir):
         try: os.makedirs(http_root_dir); log_message(f"HTTP: 已创建根目录 '{http_root_dir}'")
         except OSError as e: log_message(f"HTTP: 创建根目录失败: {e}", "ERROR"); return
+    
     Handler = functools.partial(RangeRequestHandler, directory=http_root_dir, client_manager_instance=client_manager)
+    
     use_multithread = cfg.get('http_multithread', True)
     http_server_class = ThreadPoolTCPServer if use_multithread else socketserver.TCPServer
     socketserver.TCPServer.allow_reuse_address = True
@@ -1028,38 +954,23 @@ class ConfigWindow(tk.Toplevel):
         boot_files_frame = ttk.Frame(notebook, padding="10")
         pxe_bios_frame = ttk.Frame(notebook, padding="10")
         pxe_uefi_frame = ttk.Frame(notebook, padding="10")
-        pxe_ipxe_frame = ttk.Frame(notebook, padding="10")
         dhcp_options_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(general_frame, text="常规")
-        notebook.add(path_frame, text="服务")
-        notebook.add(boot_files_frame, text="引导文件")
+        notebook.add(general_frame, text="常规/网络")
+        notebook.add(path_frame, text="服务与路径")
+        notebook.add(boot_files_frame, text="默认引导文件")
         notebook.add(pxe_bios_frame, text="PXE 菜单 (BIOS)")
         notebook.add(pxe_uefi_frame, text="PXE 菜单 (UEFI)")
-        notebook.add(pxe_ipxe_frame, text="iPXE 菜单")
         notebook.add(dhcp_options_frame, text="DHCP 自定义选项")
         self.create_general_tab(general_frame)
         self.create_path_tab(path_frame)
         self.create_boot_files_tab(boot_files_frame)
         self.create_pxe_menu_tab(pxe_bios_frame, 'bios')
         self.create_pxe_menu_tab(pxe_uefi_frame, 'uefi')
-        self.create_pxe_menu_tab(pxe_ipxe_frame, 'ipxe')
         dhcp_option_handler.create_dhcp_options_tab(dhcp_options_frame, self.settings_vars, SETTINGS)
-        
-        self._enforce_ipxe_menu_dependency()
-
         button_frame = ttk.Frame(self)
         button_frame.pack(pady=5, padx=10, fill='x')
         ttk.Button(button_frame, text="保存并关闭", command=self.save_and_close).pack(side="right", padx=5)
         ttk.Button(button_frame, text="取消", command=self.destroy).pack(side="right")
-
-    def _enforce_ipxe_menu_dependency(self, *args):
-        """当BIOS或UEFI菜单启用时，强制启用iPXE菜单。"""
-        is_bios_enabled = self.settings_vars.get('pxe_menu_bios_enabled', tk.BooleanVar(value=False)).get()
-        is_uefi_enabled = self.settings_vars.get('pxe_menu_uefi_enabled', tk.BooleanVar(value=False)).get()
-
-        if is_bios_enabled or is_uefi_enabled:
-            if 'pxe_menu_ipxe_enabled' in self.settings_vars:
-                self.settings_vars['pxe_menu_ipxe_enabled'].set(True)
 
     def create_general_tab(self, parent):
         parent.columnconfigure(1, weight=1)
@@ -1104,10 +1015,12 @@ class ConfigWindow(tk.Toplevel):
         def browse_directory(path_var):
             directory = filedialog.askdirectory()
             if directory: path_var.set(os.path.normpath(directory))
+        
         def set_all_paths():
             self.settings_vars['tftp_root'].set('.')
             self.settings_vars['http_root'].set('.')
             self.settings_vars['smb_root'].set('.')
+
         tftp_frame = ttk.Frame(parent)
         tftp_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.settings_vars['tftp_enabled'] = tk.BooleanVar(value=SETTINGS.get('tftp_enabled'))
@@ -1151,9 +1064,7 @@ class ConfigWindow(tk.Toplevel):
 
     def create_boot_files_tab(self, parent):
         parent.columnconfigure(1, weight=1)
-        new_description = """这些文件仅作为后备选项使用。
-当对应客户端类型 (BIOS, UEFI, 或 iPXE) 的“菜单”功能被禁用时，服务器将提供这里指定的文件。"""
-        ttk.Label(parent, text=new_description, wraplength=500, justify=tk.LEFT).grid(row=0, column=0, columnspan=3, sticky="w", pady=(5,15), padx=5)
+        ttk.Label(parent, text="""仅在对应的“PXE菜单”被禁用时，以下文件才会作为默认后备选项。""", wraplength=500).grid(row=0, column=0, columnspan=2, sticky="w", pady=(5,15), padx=5)
         files_map = [("BIOS 启动文件:", 'bootfile_bios'), ("UEFI32 启动文件:", 'bootfile_uefi32'),
                      ("UEFI64 启动文件:", 'bootfile_uefi64'), ("iPXE 脚本文件:", 'bootfile_ipxe')]
         for i, (label, key) in enumerate(files_map):
@@ -1165,21 +1076,8 @@ class ConfigWindow(tk.Toplevel):
         parent.columnconfigure(1, weight=1)
         enabled_key = f'pxe_menu_{arch_type}_enabled'
         self.settings_vars[enabled_key] = tk.BooleanVar(value=SETTINGS.get(enabled_key))
-        
-        menu_check_text = f"为 {arch_type.upper()} 客户端启用此菜单"
-        if arch_type == 'ipxe':
-            menu_check_text = "为 iPXE 环境启用此菜单"
-
-        check_frame = ttk.Frame(parent)
-        check_frame.grid(row=0, column=0, columnspan=2, sticky="w", pady=5)
-        
-        menu_check = ttk.Checkbutton(check_frame, text=menu_check_text, variable=self.settings_vars[enabled_key])
-        menu_check.pack(side="left")
-
-        if arch_type in ['bios', 'uefi']:
-            menu_check.config(command=self._enforce_ipxe_menu_dependency)
-            ttk.Label(check_frame, text="(依赖iPXE菜单，将自动启用)", foreground="grey").pack(side="left", padx=5)
-
+        menu_check = ttk.Checkbutton(parent, text=f"为 {arch_type.upper()} 客户端启用此菜单", variable=self.settings_vars[enabled_key])
+        menu_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=5)
         pxe_menu_frame = ttk.LabelFrame(parent, text="菜单设置", padding="10")
         pxe_menu_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=5); pxe_menu_frame.columnconfigure(1, weight=1)
         prompt_key, timeout_key, items_key = f'pxe_menu_{arch_type}_prompt', f'pxe_menu_{arch_type}_timeout', f'pxe_menu_{arch_type}_items'
@@ -1238,30 +1136,37 @@ class ConfigWindow(tk.Toplevel):
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("NBPXE 服务器 20250910")
+        self.root.title("NBPXE 服务器 20250905")
         self.root.geometry("800x600")
         main_frame = ttk.Frame(root, padding="10")
         main_frame.pack(fill="both", expand=True)
+
         status_frame = ttk.LabelFrame(main_frame, text="服务状态", padding="10")
         status_frame.pack(fill="x", pady=5)
         self.create_status_widgets(status_frame)
+
         paned_window = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
         paned_window.pack(fill="both", expand=True, pady=5)
+
         client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
         global client_manager
         client_manager = ClientManager(client_list_frame, log_message)
         client_manager.pack(fill="both", expand=True)
+        
         log_frame = ttk.LabelFrame(paned_window, text="实时日志", padding="10")
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=5)
         self.log_text.pack(fill="both", expand=True)
         self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
         self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
         self.log_text.tag_config('debug', foreground='grey')
+
         paned_window.add(client_list_frame, weight=3)
         paned_window.add(log_frame, weight=1)
+
         control_frame = ttk.Frame(main_frame, padding="5")
         control_frame.pack(fill="x")
         self.create_control_widgets(control_frame)
+        
         self.process_log_queue()
         self.update_status_display()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)

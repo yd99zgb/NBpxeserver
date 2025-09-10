@@ -1,6 +1,3 @@
-
-### 文件 3: `option.py` (完整最终版)
-
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
