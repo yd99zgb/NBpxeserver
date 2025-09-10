@@ -220,7 +220,7 @@ def create_default_ini():
     config['SMB'] = {'enabled': 'false', 'share_name': 'pxe', 'permissions': 'read'}
     config['PXEMenuBIOS'] = {
         'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
-        'prompt': 'Press F8 for BIOS Boot Menu',
+        'prompt': 'BIOS Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (BIOS), ipxe.bios, 8000, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
@@ -228,7 +228,7 @@ Boot from Local Disk, , 0000, 0.0.0.0
     }
     config['PXEMenuUEFI'] = {
         'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
-        'prompt': 'Press F8 for UEFI Boot Menu',
+        'prompt': 'UEFI Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (UEFI), ipxe.efi, 8002, {best_ip}
 Windows PE (UEFI), boot/bootmgfw.efi, 8003, {best_ip}
@@ -239,7 +239,7 @@ Boot from Local Disk, , 0000, 0.0.0.0
         'enabled': 'true', 
         'timeout': '2', 
         'randomize_timeout': 'false',
-        'prompt': 'Press F8 for iPXE Boot Menu ...',
+        'prompt': 'Press F8 for Boot Menu ...',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (iPXEFM_Menu), ipxeboot.txt, 8001, {best_ip}
 iPXE ISO, newbeeplus.iso, 8002, {best_ip}
@@ -730,12 +730,16 @@ def run_tftp_server(cfg, stop_evt):
                         tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', client_addr); return
                     
                     log_message(f"TFTP: [GET] {client_addr} 请求 '{filename}'")
-                    start_time = time.time(); file_size = os.path.getsize(filepath); blksize = 512
-
+                    start_time = time.time(); file_size = os.path.getsize(filepath)
+                    
+                    # --- TFTP OACK HANDLING MODIFICATION ---
+                    blksize = 512
+                    negotiated_blksize = 512
+                    oack_parts = []
                     is_modern_client = len(parts) > 3 and parts[1].lower() == b'octet'
+
                     if is_modern_client:
                         options = {parts[i].lower(): parts[i+1] for i in range(2, len(parts) - 1, 2)}
-                        oack_parts, negotiated_blksize = [], blksize
                         if b'blksize' in options:
                             try:
                                 negotiated_blksize = max(512, min(int(options[b'blksize']), 1456))
@@ -743,23 +747,18 @@ def run_tftp_server(cfg, stop_evt):
                             except (ValueError, IndexError): pass
                         if b'tsize' in options: oack_parts.append(b'tsize\x00' + str(file_size).encode() + b'\x00')
 
+                    with open(filepath, 'rb') as f:
                         if oack_parts:
                             oack_pkt = bytearray(struct.pack('!H', 6)); [oack_pkt.extend(p) for p in oack_parts]
                             tsock.sendto(oack_pkt, client_addr)
-                            negotiation_ok = False
-                            try:
-                                ack_data, _ = tsock.recvfrom(512)
-                                if len(ack_data) >= 4 and struct.unpack('!HH', ack_data[:4]) == (4, 0):
-                                    negotiation_ok, blksize = True, negotiated_blksize
-                                    log_message(f"TFTP: 与 {client_addr} 协商成功, blksize={blksize}", "INFO")
-                                else: log_message(f"TFTP: 从 {client_addr} 收到的 OACK 确认包内容无效。", "WARNING")
-                            except socket.timeout: log_message(f"TFTP: 等待来自 {client_addr} 的 OACK 确认包超时。", "WARNING")
-                            if not negotiation_ok: blksize = 512; log_message(f"TFTP: 协商失败, 为 {client_addr} 降级至标准模式。", "WARNING")
-
-                    with open(filepath, 'rb') as f:
+                            blksize = negotiated_blksize
+                            log_message(f"TFTP: 已向 {client_addr} 发送OACK (blksize={blksize}), 乐观地开始传输。", "INFO")
+                        
                         block_num = 1
                         while not stop_evt.is_set():
-                            chunk = f.read(blksize); data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            chunk = f.read(blksize)
+                            data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            
                             for retry in range(5):
                                 if stop_evt.is_set(): return
                                 tsock.sendto(data_pkt, client_addr)
@@ -767,10 +766,21 @@ def run_tftp_server(cfg, stop_evt):
                                     ack_data, _ = tsock.recvfrom(512)
                                     if len(ack_data) >= 4:
                                         ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
-                                        if ack_opcode == 4 and ack_block_num == block_num: break
-                                        elif ack_opcode == 5: log_message(f"TFTP: [传输中断] 客户端报告错误", "ERROR"); return
-                                except socket.timeout: continue
-                            else: log_message(f"TFTP: [传输失败] 等待 {client_addr} 对块 {block_num} 的ACK多次超时", "ERROR"); return
+                                        
+                                        if block_num == 1 and ack_opcode == 4 and ack_block_num == 0 and oack_parts:
+                                            log_message(f"TFTP: 收到来自兼容客户端 {client_addr} 的ACK(0), 等待ACK(1)。", "DEBUG")
+                                            continue
+
+                                        if ack_opcode == 4 and ack_block_num == block_num:
+                                            break
+                                        elif ack_opcode == 5:
+                                            log_message(f"TFTP: [传输中断] 客户端报告错误: {ack_data[4:].decode(errors='ignore')}", "ERROR")
+                                            return
+                                except socket.timeout:
+                                    continue
+                            else:
+                                log_message(f"TFTP: [传输失败] 等待 {client_addr} 对块 {block_num} 的ACK多次超时", "ERROR")
+                                return
                             
                             if len(chunk) < blksize:
                                 end_time = time.time(); elapsed_time = end_time - start_time
@@ -779,9 +789,11 @@ def run_tftp_server(cfg, stop_evt):
                                     speed_bps = file_size / elapsed_time
                                     speed_formatted = (f"{speed_bps/(1024*1024):.2f} MB/s" if speed_bps > 1024*1024 else f"{speed_bps/1024:.2f} KB/s" if speed_bps > 1024 else f"{speed_bps:.2f} B/s")
                                     log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成 ({speed_formatted})。")
-                                else: log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成 (瞬时)。")
+                                else:
+                                    log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成 (瞬时)。")
                                 break
                             block_num = (block_num + 1) % 65536
+                    # --- END TFTP OACK HANDLING MODIFICATION ---
                 
                 elif opcode == 2:
                     log_message(f"TFTP: [WRITE] 收到来自 {client_addr} 对 '{filename}' 的写入请求。", "INFO")
@@ -1238,7 +1250,7 @@ class ConfigWindow(tk.Toplevel):
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("NBPXE 服务器 20250910")
+        self.root.title("NBPXE 服务器 20250905")
         self.root.geometry("800x600")
         main_frame = ttk.Frame(root, padding="10")
         main_frame.pack(fill="both", expand=True)
