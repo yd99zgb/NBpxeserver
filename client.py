@@ -446,6 +446,66 @@ class ClientManager:
         if not os.path.exists(CONFIG_INI_FILENAME):
             self.menu_config.append({'name': '远程', 'path': 'bin\\tvnviewer.exe', 'args': '%IP%'})
             self.menu_config.append({'name': 'NetCopy网络同传', 'path': 'cmd', 'args': '/c echo startup.bat netcopy| bin\\\\nc64.exe -t %IP% 6086'})
+            # --- 新增的菜单项 ---
+            self.menu_config.append({'name': '重启客户机', 'path': 'cmd', 'args': '/c echo wpeutil reboot| bin\\\\nc64.exe -t %IP% 6086'})
+            self.menu_config.append({'name': '关闭客户机', 'path': 'cmd', 'args': '/c echo wpeutil shutdown| bin\\\\nc64.exe -t %IP% 6086'})
+            # --- 修改结束 ---
+            self._save_config_to_ini() 
+            return
+
+        config = configparser.ConfigParser(interpolation=None)
+        try:
+            config.read(CONFIG_INI_FILENAME, encoding='utf-8')
+            if 'Menu_Order' in config and 'order' in config['Menu_Order']:
+                order = [key.strip() for key in config['Menu_Order']['order'].split(',')]
+                for item_key in order:
+                    if item_key in config: self.menu_config.append(dict(config[item_key]))
+            
+            client_sections = [s for s in config.sections() if not s.startswith('Menu_')]
+            if client_sections:
+                max_seq = 0
+                sorted_clients = sorted(client_sections, key=lambda mac: int(config[mac].get('seq', 0)), reverse=True)
+                for mac in sorted_clients:
+                    mac_formatted = mac.replace(":", "-").upper()
+                    client_data = config[mac]; seq = int(client_data.get('seq', 0))
+                    if seq > max_seq: max_seq = seq
+                    status = client_data.get('status', '未知')
+                    hostname = client_data.get('name', '未知')
+                    
+                    tags = ()
+                    if '在线' in status:
+                        tags = ('online_status',)
+                    elif '离线' in status:
+                        tags = ('offline_status',)
+                    elif status and status != '未知':
+                        tags = ('intermediate_status',)
+                    
+                    display_name = f"{self.CLIENT_SYMBOL} {hostname}".strip()
+                    
+                    values = (
+                        seq, 
+                        client_data.get('firmware', '未知'),
+                        display_name, 
+                        client_data.get('ip', '未知'), 
+                        mac_formatted, 
+                        status
+                    )
+                    
+                    iid = self.tree.insert('', 0, values=values, tags=tags)
+                    self.mac_to_iid[mac_formatted] = iid
+                    
+                    last_wim = client_data.get('last_wim', '')
+                    if last_wim:
+                        self.mac_to_last_wim[mac_formatted] = last_wim
+
+                self.client_counter = max_seq
+        except Exception as e: 
+            if self.logger: self.logger(f"Error loading {CONFIG_INI_FILENAME}: {e}", "ERROR")
+            else: print(f"Error loading {CONFIG_INI_FILENAME}: {e}")
+        self.menu_config = []
+        if not os.path.exists(CONFIG_INI_FILENAME):
+            self.menu_config.append({'name': '远程', 'path': 'bin\\tvnviewer.exe', 'args': '%IP%'})
+            self.menu_config.append({'name': 'NetCopy网络同传', 'path': 'cmd', 'args': '/c echo startup.bat netcopy| bin\\\\nc64.exe -t %IP% 6086'})
             self._save_config_to_ini() 
             return
 
