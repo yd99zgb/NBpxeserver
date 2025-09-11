@@ -778,3 +778,34 @@ class ClientManager:
                 del self.mac_to_iid[probe_mac_norm]
         
         self.root.after(100, _remove_action)
+    def set_all_clients_offline_in_ini(self):
+         
+        if not os.path.exists(CONFIG_INI_FILENAME):
+            return
+
+        if self.logger:
+            self.logger("正在将配置文件中所有客户端的状态更新为“离线”...", "INFO")
+            
+        config = configparser.ConfigParser(interpolation=None)
+        try:
+            config.read(CONFIG_INI_FILENAME, encoding='utf-8')
+            
+            offline_text = self.STATUS_MAP.get('offline', '离线')
+            
+            for section_name in config.sections():
+                # 跳过菜单配置等非客户端条目
+                if section_name.startswith('Menu_'):
+                    continue
+                
+                # 为了保持状态信息的一致性，我们保留 [最后wim] 的部分
+                last_wim = config.get(section_name, 'last_wim', fallback='')
+                final_status = f"{offline_text} [{last_wim}]" if last_wim else offline_text
+                
+                config.set(section_name, 'status', final_status)
+
+            with open(CONFIG_INI_FILENAME, 'w', encoding='utf-8') as f:
+                config.write(f)
+
+        except Exception as e:
+            if self.logger:
+                self.logger(f"更新客户端状态到INI文件时出错: {e}", "ERROR")   

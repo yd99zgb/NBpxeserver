@@ -1179,6 +1179,13 @@ def stop_services():
     for t in [dhcp_thread, proxy_thread, tftp_thread, http_thread, dhcp_detector_thread]:
         if t and t.is_alive(): t.join(timeout=1.5)
     manage_smb_share(SETTINGS.copy(), start=False)
+    
+    # =======================[ 修改点开始 ]=======================
+    # 在服务完全停止后，调用ClientManager的方法来更新INI文件
+    if client_manager:
+        client_manager.set_all_clients_offline_in_ini()
+    # =======================[ 修改点结束 ]=======================
+
     log_message("--- 所有服务已停止 ---")
 
 # ================================================================= #
