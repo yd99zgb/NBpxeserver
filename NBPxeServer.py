@@ -804,6 +804,78 @@ def run_dhcp_server(cfg, stop_evt):
             mac = ":".join(f"{b:02x}" for b in data[28:34])
             client_ip_from_packet = socket.inet_ntoa(data[12:16])
             
+            # 保留新版本中有用的逻辑：记录已存在IP的客户端
+            if client_ip_from_packet != '0.0.0.0':
+                with ip_map_lock:
+                    ip_to_mac_map[client_ip_from_packet] = mac
+
+            opts = parse_dhcp_options(data)
+            msg_type = opts.get(53, b'\x00')[0]
+            
+            ip_to_assign = '0.0.0.0'
+            if cfg['dhcp_mode'] == 'dhcp':
+                if msg_type == 1: # DHCPDISCOVER
+                    ip_to_assign = get_lease(mac)
+                elif msg_type == 3: # DHCPREQUEST
+                    # =======================[ 这是关键的修复点 ]=======================
+                    # 始终优先使用Option 50，如果不存在则为None，而不是回退到可能为'0.0.0.0'的ciaddr
+                    req_ip = socket.inet_ntoa(opts[50]) if 50 in opts else None
+                    if req_ip: # 只要从Option 50中成功获取IP，就继续处理
+                        ip_to_assign = confirm_lease(mac, req_ip)
+                    # =======================[ 修复结束 ]=======================
+                
+                if not ip_to_assign: 
+                    continue
+
+                # 保留新版本中有用的逻辑：在分配成功后立即更新映射
+                if ip_to_assign and ip_to_assign != '0.0.0.0':
+                    with ip_map_lock:
+                        ip_to_mac_map[ip_to_assign] = mac
+            
+            response_pkt = craft_dhcp_response(data, cfg, assigned_ip=ip_to_assign)
+            if response_pkt: sock.sendto(response_pkt, ('255.255.255.255', 68))
+        except socket.timeout: 
+            continue
+        except Exception as e: 
+            log_message(f"DHCP (67): 循环中发生错误: {e}", "ERROR")
+            
+    sock.close(); log_message("DHCP (67): 监听器已停止。")
+    mac_to_ip, offered_ips = {}, {}
+    ip_pool = deque()
+    if cfg['dhcp_mode'] == 'dhcp':
+        try:
+            start_int = struct.unpack('!I', socket.inet_aton(cfg['ip_pool_start']))[0]
+            end_int = struct.unpack('!I', socket.inet_aton(cfg['ip_pool_end']))[0]
+            ip_pool.extend([socket.inet_ntoa(struct.pack('!I', i)) for i in range(start_int, end_int + 1)])
+        except Exception as e:
+            log_message(f"DHCP (67): IP池创建失败: {e}", "ERROR"); return
+
+    def get_lease(mac):
+        if mac in mac_to_ip: return mac_to_ip[mac]
+        if mac in offered_ips and offered_ips[mac]['expires'] > time.time(): return offered_ips[mac]['ip']
+        if not ip_pool: log_message("DHCP (67): IP池已耗尽!", "WARNING"); return None
+        ip = ip_pool.popleft(); offered_ips[mac] = {'ip': ip, 'expires': time.time() + 60}; return ip
+
+    def confirm_lease(mac, req_ip):
+        if mac in mac_to_ip and mac_to_ip[mac] == req_ip: return req_ip
+        if mac in offered_ips and offered_ips[mac]['ip'] == req_ip:
+            mac_to_ip[mac] = req_ip; del offered_ips[mac]; return req_ip
+        if req_ip in ip_pool:
+            mac_to_ip[mac] = req_ip; ip_pool.remove(req_ip); return req_ip
+        return None
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1); sock.settimeout(1.0)
+    try:
+        sock.bind((cfg['listen_ip'], 67)); log_message(f"DHCP: 监听器已在 {cfg['listen_ip']}:67 启动 ({cfg['dhcp_mode']} 模式)")
+    except Exception as e: log_message(f"DHCP (67): 致命错误 - 无法绑定端口: {e}", "ERROR"); return
+    
+    while not stop_evt.is_set():
+        try:
+            data, addr = sock.recvfrom(1024)
+            mac = ":".join(f"{b:02x}" for b in data[28:34])
+            client_ip_from_packet = socket.inet_ntoa(data[12:16])
+            
             if client_ip_from_packet != '0.0.0.0':
                 with ip_map_lock:
                     ip_to_mac_map[client_ip_from_packet] = mac
@@ -919,7 +991,366 @@ def log_aggregated_failures():
                     del failure_aggregator[key]
 
 # =======================[ 请从这里开始替换 ]=======================
+# =======================[ 请从这里开始替换 ]=======================
+# =======================[ 请从这里开始替换 ]=======================
 def run_tftp_server(cfg, stop_evt):
+    tftp_root = os.path.realpath(cfg['tftp_root'])
+    if not os.path.exists(tftp_root):
+        try:
+            os.makedirs(tftp_root)
+            log_message(f"TFTP: 已创建根目录 '{tftp_root}'")
+        except OSError as e:
+            log_message(f"TFTP: 创建根目录失败: {e}", "ERROR")
+            return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(1.0)
+    try:
+        sock.bind((cfg['listen_ip'], 69))
+    except Exception as e:
+        log_message(f"TFTP: 致命错误 - 无法绑定端口 69: {e}", "ERROR")
+        return
+
+    use_multithread = cfg.get('tftp_multithread', True)
+    executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='TFTP') if use_multithread else None
+    log_message(f"TFTP: 服务器已在 {cfg['listen_ip']}:69 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: '{tftp_root}')")
+
+    def handle_request(initial_data, client_addr):
+        filepath = None
+        filename = None
+        transfer_successful = False
+        opcode = 0
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
+                tsock.settimeout(5)
+
+                if len(initial_data) < 4: return
+                opcode = struct.unpack('!H', initial_data[:2])[0]
+                parts = initial_data[2:].split(b'\x00')
+                filename = parts[0].decode('ascii', 'ignore')
+                client_ip = client_addr[0]
+                
+                if opcode == 1: # READ (下载)
+                    if client_manager:
+                        client_manager.handle_file_transfer_start(client_ip, filename)
+
+                    _filename = filename.replace('\\', '/').lstrip('/')
+                    filepath = os.path.realpath(os.path.join(tftp_root, _filename))
+
+                    if not filepath.startswith(tftp_root) or not os.path.isfile(filepath):
+                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法或不存在的文件 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', client_addr); return
+                    
+                    log_message(f"TFTP: [GET] {client_addr} 请求 '{filename}'")
+                    file_size = os.path.getsize(filepath)
+                    
+                    # =======================[ 关键修复点 1: OACK 协商 ]=======================
+                    blksize = 512 # 默认块大小
+                    is_modern_client = len(parts) > 3 and parts[1].lower() == b'octet'
+                    
+                    if is_modern_client:
+                        options = {parts[i].lower(): parts[i+1] for i in range(2, len(parts) - 1, 2)}
+                        oack_parts = []
+                        negotiated_blksize = 512
+                        
+                        if b'blksize' in options:
+                            try:
+                                # 协商一个合理的块大小，防止过大导致IP分片
+                                negotiated_blksize = max(512, min(int(options[b'blksize']), 1428))
+                                oack_parts.append(b'blksize\x00' + str(negotiated_blksize).encode() + b'\x00')
+                            except (ValueError, IndexError): pass
+                        if b'tsize' in options: oack_parts.append(b'tsize\x00' + str(file_size).encode() + b'\x00')
+
+                        if oack_parts:
+                            oack_pkt = bytearray(struct.pack('!H', 6))
+                            for part in oack_parts:
+                                oack_pkt.extend(part)
+                            
+                            tsock.sendto(oack_pkt, client_addr)
+                            
+                            try:
+                                # 等待客户端对OACK的确认 (ACK 0)，超时设为2秒
+                                tsock.settimeout(2.0)
+                                ack_data, ack_addr = tsock.recvfrom(512)
+                                client_addr = ack_addr # 更新客户端地址
+                                if len(ack_data) >= 4:
+                                    ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
+                                    if ack_opcode == 4 and ack_block_num == 0:
+                                        log_message(f"TFTP: {client_addr} 已确认OACK (blksize={negotiated_blksize})。开始快速传输。", "INFO")
+                                        blksize = negotiated_blksize
+                                    else:
+                                        log_message(f"TFTP: {client_addr} 对OACK响应异常，回退至标准模式。", "WARNING")
+                                else:
+                                    log_message(f"TFTP: {client_addr} 发送了无效的OACK确认，回退至标准模式。", "WARNING")
+                            except socket.timeout:
+                                log_message(f"TFTP: {client_addr} 未确认OACK，回退至标准模式。", "INFO")
+                            
+                            # 恢复后续数据传输的超时时间
+                            tsock.settimeout(5.0)
+
+                    with open(filepath, 'rb') as f:
+                        block_num = 1
+                        while not stop_evt.is_set():
+                            chunk = f.read(blksize)
+                            data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            
+                            for retry in range(5):
+                                if stop_evt.is_set(): return
+                                tsock.sendto(data_pkt, client_addr)
+                                try:
+                                    # =======================[ 关键修复点 2: 动态端口 ]=======================
+                                    ack_data, ack_addr = tsock.recvfrom(512)
+                                    if len(ack_data) >= 4:
+                                        ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
+                                        if ack_opcode == 4 and ack_block_num == block_num:
+                                            client_addr = ack_addr # 持续更新客户端的最新通信地址
+                                            break
+                                except socket.timeout:
+                                    continue
+                            else:
+                                log_message(f"TFTP: [传输失败] 等待 {client_addr} 对块 {block_num} 的ACK多次超时", "ERROR")
+                                return
+                            
+                            if len(chunk) < blksize:
+                                transfer_successful = True
+                                log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成。")
+                                break
+                            block_num = (block_num + 1) % 65536
+                
+                elif opcode == 2: # 上传逻辑保持不变
+                    # ... (此部分代码与您原始版本相同，此处省略以保持简洁)
+                    log_message(f"TFTP: [WRITE] 收到来自 {client_addr} 对 '{filename}' 的上传请求。", "INFO")
+                    sanitized_filename = filename.replace('\\', '/').lstrip('/')
+                    if not sanitized_filename or '..' in sanitized_filename.split('/'):
+                        log_message(f"TFTP: [拒绝] 收到来自 {client_addr} 的无效或恶意文件名 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 4) + b'Illegal TFTP operation\x00', client_addr); return
+                    
+                    filepath = os.path.join(tftp_root, sanitized_filename)
+                    if not os.path.realpath(filepath).startswith(os.path.realpath(tftp_root)):
+                        log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的目录遍历尝试 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+                    
+                    if os.path.exists(filepath):
+                        log_message(f"TFTP: [警告] 文件 '{filepath}' 已存在。客户端 {client_addr} 即将覆盖该文件。", "WARNING")
+                    
+                    try:
+                        dir_path = os.path.dirname(filepath)
+                        if not os.path.exists(dir_path): os.makedirs(dir_path)
+                    except OSError as e:
+                        log_message(f"TFTP: [拒绝] 无法为 '{sanitized_filename}' 创建目录: {e}", "ERROR")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+                    
+                    tsock.sendto(struct.pack('!HH', 4, 0), client_addr)
+                    expected_block_num = 1
+                    total_bytes_written = 0
+                    with open(filepath, 'wb') as f:
+                        while True:
+                            data, addr = tsock.recvfrom(516)
+                            if len(data) < 4: continue
+                            opcode_data, block_num = struct.unpack('!HH', data[:4])
+                            if opcode_data == 5: log_message(f"TFTP: [写入中断] 客户端 {addr} 报告错误。", "WARNING"); return
+                            if opcode_data != 3 or addr != client_addr: continue
+                            if block_num == expected_block_num:
+                                chunk = data[4:]; f.write(chunk); total_bytes_written += len(chunk)
+                                tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
+                                expected_block_num = (expected_block_num + 1) % 65536
+                                if len(chunk) < 512:
+                                    log_message(f"TFTP: [写入成功] 文件 '{sanitized_filename}' ({total_bytes_written}字节) 已从 {client_addr} 接收完毕。")
+                                    transfer_successful = True
+                                    break
+                            elif block_num < expected_block_num:
+                                tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
+                
+        except socket.timeout:
+            log_message(f"TFTP: [超时] 与客户端 {client_addr} 的通信超时。", "ERROR")
+        except ConnectionResetError:
+            log_message(f"TFTP: 客户端 {client_addr} 已关闭连接 (可能传输已完成)。", "INFO")
+            transfer_successful = True
+        except Exception as e:
+            log_message(f"TFTP: 处理来自 {client_addr} 的请求时发生意外错误: {e}", "ERROR")
+        finally:
+            if client_manager and filename and transfer_successful:
+                if opcode == 1:
+                    client_manager.handle_file_transfer_complete(client_ip, filename)
+                elif opcode == 2:
+                    client_manager.handle_file_upload_complete(client_ip, filename)
+
+    try:
+        while not stop_evt.is_set():
+            try:
+                data, addr = sock.recvfrom(1500)
+                if use_multithread and executor:
+                    executor.submit(handle_request, data, addr)
+                else:
+                    threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+    finally:
+        if executor: executor.shutdown(wait=False)
+        sock.close()
+        log_message("TFTP: 服务器已停止。")
+# =======================[ 请替换到这里结束 ]=======================
+    tftp_root = os.path.realpath(cfg['tftp_root'])
+    if not os.path.exists(tftp_root):
+        try:
+            os.makedirs(tftp_root)
+            log_message(f"TFTP: 已创建根目录 '{tftp_root}'")
+        except OSError as e:
+            log_message(f"TFTP: 创建根目录失败: {e}", "ERROR")
+            return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(1.0)
+    try:
+        sock.bind((cfg['listen_ip'], 69))
+    except Exception as e:
+        log_message(f"TFTP: 致命错误 - 无法绑定端口 69: {e}", "ERROR")
+        return
+
+    use_multithread = cfg.get('tftp_multithread', True)
+    executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='TFTP') if use_multithread else None
+    log_message(f"TFTP: 服务器已在 {cfg['listen_ip']}:69 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: '{tftp_root}')")
+
+    def handle_request(initial_data, client_addr):
+        # 将初始客户端地址保存，用于后续验证和更新
+        current_client_addr = client_addr
+        filepath = None
+        filename = None
+        transfer_successful = False
+        opcode = 0
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
+                tsock.settimeout(5)
+
+                if len(initial_data) < 4: return
+                opcode = struct.unpack('!H', initial_data[:2])[0]
+                parts = initial_data[2:].split(b'\x00')
+                filename = parts[0].decode('ascii', 'ignore')
+                client_ip = current_client_addr[0]
+                
+                if opcode == 1: # READ (下载)
+                    if client_manager:
+                        client_manager.handle_file_transfer_start(client_ip, filename)
+
+                    _filename = filename.replace('\\', '/').lstrip('/')
+                    filepath = os.path.realpath(os.path.join(tftp_root, _filename))
+
+                    if not filepath.startswith(tftp_root) or not os.path.isfile(filepath):
+                        log_message(f"TFTP: [拒绝] {current_client_addr} 请求了非法或不存在的文件 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', current_client_addr)
+                        return
+                    
+                    log_message(f"TFTP: [GET] {current_client_addr} 请求 '{filename}'")
+                    
+                    with open(filepath, 'rb') as f:
+                        block_num = 1
+                        while not stop_evt.is_set():
+                            chunk = f.read(512)
+                            data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            
+                            for retry in range(5):
+                                if stop_evt.is_set(): return
+                                
+                                # 使用最新的客户端地址发送数据
+                                tsock.sendto(data_pkt, current_client_addr)
+                                try:
+                                    # =======================[ 关键修复点 ]=======================
+                                    # 接收ACK时，同时捕获发送方的地址 (ack_addr)
+                                    ack_data, ack_addr = tsock.recvfrom(512)
+                                    
+                                    # 验证ACK包的合法性
+                                    if len(ack_data) >= 4 and struct.unpack('!HH', ack_data[:4]) == (4, block_num):
+                                        # 关键逻辑：如果ACK来自新的端口，则更新通信地址
+                                        # 这确保了下一个数据包会被发送到正确的端口
+                                        current_client_addr = ack_addr
+                                        break # 成功收到ACK，跳出重试循环
+                                    # =======================[ 修复结束 ]=======================
+                                except socket.timeout:
+                                    continue # 超时则继续重试
+                            else:
+                                # 如果重试5次后仍然失败
+                                log_message(f"TFTP: [传输失败] 等待 {current_client_addr} 对块 {block_num} 的ACK多次超时", "ERROR")
+                                return
+                            
+                            if len(chunk) < 512:
+                                transfer_successful = True
+                                log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {current_client_addr} 传输完成。")
+                                break
+                            block_num = (block_num + 1) % 65536
+                
+                elif opcode == 2: # WRITE (上传) 逻辑保持您原有的健壮实现
+                    log_message(f"TFTP: [WRITE] 收到来自 {current_client_addr} 对 '{filename}' 的上传请求。", "INFO")
+                    sanitized_filename = filename.replace('\\', '/').lstrip('/')
+                    if not sanitized_filename or '..' in sanitized_filename.split('/'):
+                        log_message(f"TFTP: [拒绝] 收到来自 {current_client_addr} 的无效或恶意文件名 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 4) + b'Illegal TFTP operation\x00', current_client_addr); return
+                    
+                    filepath = os.path.join(tftp_root, sanitized_filename)
+                    if not os.path.realpath(filepath).startswith(os.path.realpath(tftp_root)):
+                        log_message(f"TFTP: [拒绝] 检测到来自 {current_client_addr} 的目录遍历尝试 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', current_client_addr); return
+                    
+                    if os.path.exists(filepath):
+                        log_message(f"TFTP: [警告] 文件 '{filepath}' 已存在。客户端 {current_client_addr} 即将覆盖该文件。", "WARNING")
+                    
+                    try:
+                        dir_path = os.path.dirname(filepath)
+                        if not os.path.exists(dir_path): os.makedirs(dir_path)
+                    except OSError as e:
+                        log_message(f"TFTP: [拒绝] 无法为 '{sanitized_filename}' 创建目录: {e}", "ERROR")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', current_client_addr); return
+                    
+                    tsock.sendto(struct.pack('!HH', 4, 0), current_client_addr)
+                    expected_block_num = 1
+                    total_bytes_written = 0
+                    with open(filepath, 'wb') as f:
+                        while True:
+                            data, addr = tsock.recvfrom(516)
+                            if len(data) < 4: continue
+                            opcode_data, block_num = struct.unpack('!HH', data[:4])
+                            if opcode_data == 5: log_message(f"TFTP: [写入中断] 客户端 {addr} 报告错误。", "WARNING"); return
+                            if opcode_data != 3 or addr != current_client_addr: continue
+                            if block_num == expected_block_num:
+                                chunk = data[4:]; f.write(chunk); total_bytes_written += len(chunk)
+                                tsock.sendto(struct.pack('!HH', 4, block_num), current_client_addr)
+                                expected_block_num = (expected_block_num + 1) % 65536
+                                if len(chunk) < 512:
+                                    log_message(f"TFTP: [写入成功] 文件 '{sanitized_filename}' ({total_bytes_written}字节) 已从 {current_client_addr} 接收完毕。")
+                                    transfer_successful = True
+                                    break
+                            elif block_num < expected_block_num:
+                                tsock.sendto(struct.pack('!HH', 4, block_num), current_client_addr)
+                
+        except socket.timeout:
+            log_message(f"TFTP: [超时] 与客户端 {current_client_addr} 的通信超时。", "ERROR")
+        except ConnectionResetError:
+            log_message(f"TFTP: 客户端 {current_client_addr} 已关闭连接 (可能传输已完成)。", "INFO")
+            transfer_successful = True
+        except Exception as e:
+            log_message(f"TFTP: 处理来自 {current_client_addr} 的请求时发生意外错误: {e}", "ERROR")
+        finally:
+            if client_manager and filename and transfer_successful:
+                if opcode == 1:
+                    client_manager.handle_file_transfer_complete(client_ip, filename)
+                elif opcode == 2:
+                    client_manager.handle_file_upload_complete(client_ip, filename)
+
+    try:
+        while not stop_evt.is_set():
+            try:
+                data, addr = sock.recvfrom(1500)
+                if use_multithread and executor:
+                    executor.submit(handle_request, data, addr)
+                else:
+                    threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+    finally:
+        if executor: executor.shutdown(wait=False)
+        sock.close()
+        log_message("TFTP: 服务器已停止。")
+# =======================[ 请替换到这里结束 ]=======================
     tftp_root = os.path.realpath(cfg['tftp_root'])
     if not os.path.exists(tftp_root):
         try:
@@ -2814,71 +3245,246 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
+        """
+        处理 HTTP GET 请求。
+        - 新增: 如果请求路径是目录，则调用父类方法生成并显示目录列表。
+        - 保留: 如果是文件，则按原逻辑处理，支持完整的断点续传功能。
+        """
         fpath = self.translate_path(self.path)
-        if not os.path.isfile(fpath): self.send_error(404, "File not found"); return
+
+        # =======================[ 修改点开始 ]=======================
+        # 检查请求的路径是否为一个存在的目录
+        if os.path.isdir(fpath):
+            log_message(f"HTTP: [目录浏览] 客户端 {self.client_address[0]} 正在浏览 '{self.path}'")
+            # 如果是目录，直接调用父类的 do_GET 方法，它会自动生成HTML目录列表
+            super().do_GET()
+            return
+        # =======================[ 修改点结束 ]=======================
+
+        # 如果不是目录，则继续执行原有的文件处理逻辑
+        if not os.path.isfile(fpath):
+            self.send_error(404, "File not found")
+            return
+
+        # --- 以下为原有的文件传输和断点续传逻辑，保持不变 ---
         filename = os.path.basename(fpath)
         client_ip = self.client_address[0]
         if self.client_manager:
             self.client_manager.handle_file_transfer_start(client_ip, filename)
+        
         transfer_successful = False
         try:
             with open(fpath, 'rb') as f:
-                fs = os.fstat(f.fileno()); size = fs.st_size
+                fs = os.fstat(f.fileno())
+                size = fs.st_size
                 range_header = self.headers.get('Range')
+                
                 if not range_header:
-                    self.send_response(200); self.send_header("Content-type", self.guess_type(fpath))
-                    self.send_header("Content-Length", str(size)); self.send_header("Accept-Ranges", "bytes")
-                    self.end_headers(); self.copyfile(f, self.wfile)
-                    log_message(f"HTTP: [200 GET] {self.path} -> {self.client_address[0]}");
+                    self.send_response(200)
+                    self.send_header("Content-type", self.guess_type(fpath))
+                    self.send_header("Content-Length", str(size))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+                    self.copyfile(f, self.wfile)
+                    log_message(f"HTTP: [200 GET] {self.path} -> {self.client_address[0]}")
                 else:
-                    self.send_response(206); self.send_header("Accept-Ranges", "bytes")
+                    self.send_response(206)
+                    self.send_header("Accept-Ranges", "bytes")
                     try:
                         start_str, end_str = range_header.replace('bytes=', '').split('-')
                         start = int(start_str) if start_str else 0
                         end = int(end_str) if end_str else size - 1
-                        if range_header.startswith('bytes=-'): start, end = size - int(end_str), size - 1
-                    except ValueError: self.send_error(400, "Invalid Range header"); return
+                        if range_header.startswith('bytes=-'):
+                            start = size - int(end_str)
+                            end = size - 1
+                    except ValueError:
+                        self.send_error(400, "Invalid Range header")
+                        return
+
                     if start >= size or end >= size or start > end:
-                        self.send_response(416); self.send_header("Content-Range", f"bytes */{size}")
-                        self.end_headers(); return
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.end_headers()
+                        return
+                        
                     self.send_header("Content-type", self.guess_type(fpath))
                     self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                     content_length = end - start + 1
-                    self.send_header("Content-Length", str(content_length)); self.end_headers()
-                    f.seek(start); self.copyfile(f, self.wfile, length=content_length)
+                    self.send_header("Content-Length", str(content_length))
+                    self.end_headers()
+                    
+                    f.seek(start)
+                    self.copyfile(f, self.wfile, length=content_length)
                     log_message(f"HTTP: [206 Partial] {self.path} ({start}-{end}) -> {self.client_address[0]}")
+            
             transfer_successful = True
         except (BrokenPipeError, ConnectionResetError):
             transfer_successful = True
-        except OSError: self.send_error(404, "File not found")
+        except OSError:
+            self.send_error(404, "File not found")
         finally:
             if self.client_manager and transfer_successful:
                 self.client_manager.handle_file_transfer_complete(client_ip, filename)
 
     def copyfile(self, source, outputfile, length=None):
-        bytes_to_send = length if length is not None else -1; sent = 0
+        bytes_to_send = length if length is not None else -1
+        sent = 0
         while bytes_to_send < 0 or sent < bytes_to_send:
             buf_size = 65536
-            if bytes_to_send > 0: buf_size = min(buf_size, bytes_to_send - sent)
+            if bytes_to_send > 0:
+                buf_size = min(buf_size, bytes_to_send - sent)
             buf = source.read(buf_size)
-            if not buf: break
-            outputfile.write(buf); sent += len(buf)
+            if not buf:
+                break
+            outputfile.write(buf)
+            sent += len(buf)
+    def do_GET(self):
+        fpath = self.translate_path(self.path)
+        if not os.path.isfile(fpath):
+            super().do_GET()
+            return
+        try:
+            with open(fpath, 'rb') as f:
+                fs = os.fstat(f.fileno())
+                size = fs[6]
+                range_header = self.headers.get('Range')
+                if not range_header or not range_header.startswith('bytes='):
+                    self.send_response(200)
+                    self.send_header("Content-type", self.guess_type(fpath))
+                    self.send_header("Content-Length", str(size))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers()
+                    self.copyfile(f, self.wfile)
+                    log_message(f"HTTP: [200 GET] {self.path} -> {self.client_address[0]}")
+                    return
+                start_byte, end_byte = 0, size - 1
+                try:
+                    range_value = range_header.split('=', 1)[1]
+                    start_str, end_str = range_value.split('-', 1)
+                    if start_str == '':
+                        suffix_len = int(end_str)
+                        if suffix_len <= 0: raise ValueError
+                        start_byte = max(0, size - suffix_len)
+                    else:
+                        start_byte = int(start_str)
+                        if end_str:
+                            end_byte = int(end_str)
+                except (ValueError, IndexError):
+                    self.send_error(400, "Invalid Range header"); return
+                if start_byte >= size or end_byte >= size or start_byte > end_byte:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.end_headers()
+                    log_message(f"HTTP: [416 Range] 无效范围 {range_header} for {self.path} -> {self.client_address[0]}")
+                    return
+                self.send_response(206)
+                self.send_header("Content-type", self.guess_type(fpath))
+                self.send_header("Accept-Ranges", "bytes")
+                content_length = end_byte - start_byte + 1
+                self.send_header("Content-Length", str(content_length))
+                self.send_header("Content-Range", f"bytes {start_byte}-{end_byte}/{size}")
+                self.end_headers()
+                f.seek(start_byte)
+                bytes_sent = 0
+                while bytes_sent < content_length:
+                    bytes_to_read = min(65536, content_length - bytes_sent)
+                    chunk = f.read(bytes_to_read)
+                    if not chunk: break
+                    self.wfile.write(chunk)
+                    bytes_sent += len(chunk)
+                log_message(f"HTTP: [206 Partial] {self.path} ({start_byte}-{end_byte}) -> {self.client_address[0]}")
+        except (BrokenPipeError, ConnectionResetError): pass
+        except OSError: self.send_error(404, "File not found")
 
 class ThreadPoolTCPServer(socketserver.TCPServer):
-    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True, max_workers=20):
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
         super().__init__(server_address, RequestHandlerClass, bind_and_activate)
-        self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='HTTP')
+        self.executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='HTTP')
     def process_request(self, request, client_address):
         self.executor.submit(self.process_request_thread, request, client_address)
     def process_request_thread(self, request, client_address):
-        try: self.finish_request(request, client_address)
-        except Exception: self.handle_error(request, client_address)
-        finally: self.shutdown_request(request)
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
     def server_close(self):
         super().server_close()
-        if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=True)
 
 def run_http_server(cfg, stop_evt):
+    http_root_dir = os.path.realpath(cfg['http_root'])
+    
+    if not os.path.exists(http_root_dir):
+        try:
+            os.makedirs(http_root_dir)
+            log_message(f"HTTP: 已创建根目录 '{http_root_dir}'")
+        except OSError as e:
+            log_message(f"HTTP: 创建根目录失败: {e}", "ERROR")
+            return
+
+    # =======================[ 核心修正点 ]=======================
+    # 创建一个自定义的 Handler，它在自己的线程/进程中首先切换工作目录
+    # 这是确保目录浏览和文件服务基于正确根目录的最可靠方法。
+    class DirectoryAwareHandler(RangeRequestHandler):
+        def __init__(self, *args, **kwargs):
+            # 关键：在处理任何请求之前，将当前工作目录切换到指定的根目录
+            os.chdir(http_root_dir)
+            super().__init__(*args, **kwargs)
+
+    # 在 functools.partial 中不再需要传递 directory 参数，因为 Handler 内部会处理
+    Handler = functools.partial(DirectoryAwareHandler, client_manager_instance=client_manager)
+    # =======================[ 修正结束 ]=======================
+    
+    use_multithread = cfg.get('http_multithread', True)
+    http_server_class = ThreadPoolTCPServer if use_multithread else socketserver.TCPServer
+    socketserver.TCPServer.allow_reuse_address = True
+    
+    try:
+        with http_server_class((cfg['listen_ip'], cfg['http_port']), Handler) as httpd:
+            log_message(f"HTTP: 服务器已在 http://{cfg['server_ip']}:{cfg['http_port']}/ 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: {http_root_dir})")
+            server_thread = threading.Thread(target=httpd.serve_forever)
+            server_thread.daemon = True
+            server_thread.start()
+            stop_evt.wait()
+            httpd.shutdown()
+    except Exception as e:
+        log_message(f"HTTP: 致命错误 - 无法启动服务器: {e}", "ERROR")
+        
+    log_message("HTTP: 服务器已停止。")
+    # =======================[ 核心修正点 ]=======================
+    # 将配置文件中的路径（无论是相对还是绝对）转换为一个明确的绝对路径。
+    # 这能确保HTTP服务线程无论在何种环境下启动，都能准确找到其根目录。
+    http_root_dir = os.path.realpath(cfg['http_root'])
+    # =======================[ 修正结束 ]=======================
+
+    if not os.path.exists(http_root_dir):
+        try:
+            os.makedirs(http_root_dir)
+            log_message(f"HTTP: 已创建根目录 '{http_root_dir}'")
+        except OSError as e:
+            log_message(f"HTTP: 创建根目录失败: {e}", "ERROR")
+            return
+            
+    Handler = functools.partial(RangeRequestHandler, directory=http_root_dir, client_manager_instance=client_manager)
+    use_multithread = cfg.get('http_multithread', True)
+    http_server_class = ThreadPoolTCPServer if use_multithread else socketserver.TCPServer
+    socketserver.TCPServer.allow_reuse_address = True
+    
+    try:
+        with http_server_class((cfg['listen_ip'], cfg['http_port']), Handler) as httpd:
+            log_message(f"HTTP: 服务器已在 http://{cfg['server_ip']}:{cfg['http_port']}/ 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: {http_root_dir})")
+            server_thread = threading.Thread(target=httpd.serve_forever)
+            server_thread.daemon = True
+            server_thread.start()
+            stop_evt.wait()
+            httpd.shutdown()
+    except Exception as e:
+        log_message(f"HTTP: 致命错误 - 无法启动服务器: {e}", "ERROR")
+        
+    log_message("HTTP: 服务器已停止。")
     http_root_dir = cfg['http_root']
     if not os.path.exists(http_root_dir):
         try: os.makedirs(http_root_dir); log_message(f"HTTP: 已创建根目录 '{http_root_dir}'")
