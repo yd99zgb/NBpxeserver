@@ -243,6 +243,8 @@ Boot from Local Disk, , 0000, 0.0.0.0
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (UEFI), ipxe.efi, 8002, {best_ip}
 Windows PE (UEFI), boot/bootmgfw.efi, 8003, {best_ip}
+GRUB4DOS FOR UEFI, g4e.efi, 8004, {best_ip}
+GRUBFM, grubfmx64.efi, 8005, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
@@ -253,7 +255,9 @@ Boot from Local Disk, , 0000, 0.0.0.0
         'prompt': 'Press F8 for iPXE Boot Menu ...',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (iPXEFM_Menu), ipxeboot.txt, 8001, {best_ip}
-iPXE g4e, g4e.efi, 8002, {best_ip}
+netboot.xyz, https://boot.netboot.xyz, 8002, {best_ip}
+GRUB4DOS FOR UEFI, g4e.efi, 8003, {best_ip}
+GRUBFM, grubfmx64.efi, 8004, {best_ip}
 Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
