@@ -4220,6 +4220,109 @@ class NBpxeApp:
         ttk.Button(parent, text="退出程序", command=self.on_closing).pack(side="right", padx=5, pady=5)
 
     def reset_ini_file(self):
+        # =======================[ 修改点开始 ]=======================
+        if messagebox.askyesno("重置配置?", f"您确定要删除配置文件 '{INI_FILENAME}' 吗?\n\n程序将在操作后关闭，请您手动重启以便生成新的默认配置。"):
+            stop_services()
+            try:
+                if os.path.exists(INI_FILENAME):
+                    os.remove(INI_FILENAME)
+                messagebox.showinfo("重置成功", f"配置文件 '{INI_FILENAME}' 已被删除。\n程序即将关闭，请手动重启。")
+                self.on_closing(force=True)
+            except Exception as e:
+                messagebox.showerror("删除失败", f"无法删除配置文件 '{INI_FILENAME}': {e}")
+        # =======================[ 修改点结束 ]=======================
+
+    def on_closing(self, force=False):
+        if force or messagebox.askokcancel("退出", "您确定要退出 NBPXE 服务器吗？"):
+            if client_manager:
+                client_manager.stop_monitoring()
+            stop_services()
+            self.root.destroy()
+    
+    def process_log_queue(self):
+        try:
+            while True:
+                msg, level = log_queue.get_nowait()
+                tag = level.lower() if level in ['WARNING', 'ERROR', 'DEBUG'] else ''
+                self.log_text.config(state='normal')
+                self.log_text.insert(tk.END, msg + '\n', tag)
+                self.log_text.see(tk.END)
+                self.log_text.config(state='disabled')
+        except queue.Empty: pass
+        finally:
+            self.root.after(100, self.process_log_queue)
+
+    def update_status_display(self):
+        is_dhcp_running = dhcp_thread and dhcp_thread.is_alive()
+        is_proxy_running = proxy_thread and proxy_thread.is_alive()
+        if SETTINGS.get('dhcp_enabled'):
+            if is_dhcp_running and is_proxy_running:
+                mode = SETTINGS.get('dhcp_mode', 'proxy').upper()
+                self.status_labels["DHCP"].config(text=f"● 运行中 ({mode})", foreground="green")
+            else: self.status_labels["DHCP"].config(text="■ 未启动", foreground="orange")
+        else: self.status_labels["DHCP"].config(text="■ 已禁用", foreground="grey")
+        is_tftp_running = tftp_thread and tftp_thread.is_alive()
+        if SETTINGS.get('tftp_enabled'):
+            text, color = ("● 运行中", "green") if is_tftp_running else ("■ 未启动", "orange")
+            self.status_labels["TFTP"].config(text=text, foreground=color)
+        else: self.status_labels["TFTP"].config(text="■ 已禁用", foreground="grey")
+        is_http_running = http_thread and http_thread.is_alive()
+        if SETTINGS.get('http_enabled'):
+            text, color = ("● 运行中", "green") if is_http_running else ("■ 未启动", "orange")
+            self.status_labels["HTTP"].config(text=text, foreground=color)
+        else: self.status_labels["HTTP"].config(text="■ 已禁用", foreground="grey")
+        if SETTINGS.get('smb_enabled'):
+            if is_smb_share_active(SETTINGS.get('smb_share_name')):
+                self.status_labels["SMB"].config(text="● 共享中", foreground="green")
+            else: self.status_labels["SMB"].config(text="■ 未共享", foreground="orange")
+        else: self.status_labels["SMB"].config(text="■ 已禁用", foreground="grey")
+        self.root.after(1000, self.update_status_display)
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NBPXE 服务器 20250911")
+        self.root.geometry("800x600")
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.pack(fill="both", expand=True)
+        status_frame = ttk.LabelFrame(main_frame, text="服务状态", padding="10")
+        status_frame.pack(fill="x", pady=5)
+        self.create_status_widgets(status_frame)
+        paned_window = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
+        paned_window.pack(fill="both", expand=True, pady=5)
+        client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
+        global client_manager
+        client_manager = ClientManager(client_list_frame, log_message)
+        client_manager.pack(fill="both", expand=True)
+        log_frame = ttk.LabelFrame(paned_window, text="实时日志", padding="10")
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=5)
+        self.log_text.pack(fill="both", expand=True)
+        self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
+        self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
+        self.log_text.tag_config('debug', foreground='grey')
+        paned_window.add(client_list_frame, weight=3)
+        paned_window.add(log_frame, weight=1)
+        control_frame = ttk.Frame(main_frame, padding="5")
+        control_frame.pack(fill="x")
+        self.create_control_widgets(control_frame)
+        self.process_log_queue()
+        self.update_status_display()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def create_status_widgets(self, parent):
+        self.status_labels = {}
+        services = ["DHCP", "TFTP", "HTTP", "SMB"]
+        for i, service in enumerate(services):
+            ttk.Label(parent, text=f"{service}:").grid(row=0, column=i*2, sticky="w", padx=(0, 5))
+            self.status_labels[service] = ttk.Label(parent, text="■ 已停止", foreground="red", font=('Helvetica', 9, 'bold'))
+            self.status_labels[service].grid(row=0, column=i*2+1, sticky="w", padx=(0, 20))
+    
+    def create_control_widgets(self, parent):
+        ttk.Button(parent, text="启动 / 重启服务", command=start_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="停止所有服务", command=stop_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="修改配置", command=lambda: ConfigWindow(self.root)).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="重置配置文件", command=self.reset_ini_file).pack(side="left", padx=(15, 5), pady=5)
+        ttk.Button(parent, text="退出程序", command=self.on_closing).pack(side="right", padx=5, pady=5)
+
+    def reset_ini_file(self):
         if messagebox.askyesno("重置配置?", f"您确定要删除 '{INI_FILENAME}' 并恢复为默认设置吗?\n程序将在之后关闭，请手动重启。"):
             stop_services()
             try:
