@@ -1,4 +1,4 @@
-### 文件 2: client.py (最终修复版)
+### 文件 2: `client.py` (完整最终版)
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -13,7 +13,7 @@ import re
 
 # --- 文件名常量 ---
 CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
-# --- 服务端探测客户端的特殊MAC地址 ---
+# --- 新增: 服务端探测客户端的特殊MAC地址 ---
 PROBE_MAC = '00-11-22-33-44-55'
 
 
@@ -183,22 +183,6 @@ class ClientManager:
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_worker, daemon=True)
         self.heartbeat_thread.start()
 
-    # =======================[ 新增核心函数 ]=======================
-    def _normalize_mac(self, mac_string):
-        """
-        将任何格式的MAC地址字符串标准化为 'XX-XX-XX-XX-XX-XX' 格式。
-        这是解决所有重复问题的关键。
-        """
-        if not isinstance(mac_string, str):
-            return ""
-        # 移除所有非字母数字字符，然后转换为大写
-        cleaned = re.sub(r'[^a-fA-F0-9]', '', mac_string).upper()
-        if len(cleaned) != 12:
-            return mac_string # 如果长度不正确，返回原始值以备调试
-        # 每两个字符插入一个短横线
-        return '-'.join(cleaned[i:i+2] for i in range(0, 12, 2))
-    # =======================[ 修改结束 ]=======================
-
     def stop_monitoring(self):
         self.stop_heartbeat.set()
 
@@ -273,6 +257,9 @@ class ClientManager:
         if self.last_checked_index >= len(all_iids):
             self.last_checked_index = 0
 
+        # if self.logger:
+        #     self.logger(f"心跳服务: 开始轮流 PING 检测 (从索引 {self.last_checked_index} 开始, 最多 {self.CLIENTS_TO_CHECK_PER_CYCLE} 个)", "DEBUG")
+
         checked_count = 0
         current_scan_index = self.last_checked_index
         
@@ -285,7 +272,7 @@ class ClientManager:
             try:
                 current_values = self.tree.item(iid, 'values')
                 if not current_values or len(current_values) < 6: continue
-                _, _, name_with_symbol, current_ip, mac, current_status = current_values
+                _, _, name_with_symbol, current_ip, mac_upper, current_status = current_values
             except tk.TclError:
                 current_scan_index = (current_scan_index + 1) % len(all_iids)
                 continue
@@ -296,20 +283,21 @@ class ClientManager:
 
             checked_count += 1
             
-            mac_norm = self._normalize_mac(mac)
-            if mac_norm == PROBE_MAC:
+            if mac_upper == PROBE_MAC:
                 current_scan_index = (current_scan_index + 1) % len(all_iids)
                 continue
             
-            last_wim = self.mac_to_last_wim.get(mac_norm, '')
+            last_wim = self.mac_to_last_wim.get(mac_upper, '')
             clean_name = name_with_symbol.lstrip(self.CLIENT_SYMBOL).strip()
             
             is_online = False
             final_ip = current_ip
 
             if current_ip != '未知':
+                # if self.logger: self.logger(f"心跳服务: -> PING IP [{current_ip}] for MAC [{mac_upper}]...", "DEBUG")
                 is_online = self._ping_ip(current_ip)
             elif clean_name and clean_name != '未知':
+                # if self.logger: self.logger(f"心跳服务: -> PING Hostname [{clean_name}] for MAC [{mac_upper}]...", "DEBUG")
                 resolved_ip = self._get_ip_from_hostname(clean_name)
                 if resolved_ip:
                     is_online = True
@@ -328,7 +316,7 @@ class ClientManager:
                     update_data['status'] = offline_status_text
             
             if update_data:
-                update_data['mac'] = mac_norm
+                update_data['mac'] = mac_upper
                 updates_to_perform.append(update_data)
             
             current_scan_index = (current_scan_index + 1) % len(all_iids)
@@ -341,10 +329,10 @@ class ClientManager:
     def _apply_ui_updates(self, updates):
         final_updates = {}
         for data in updates:
-            mac_norm = self._normalize_mac(data['mac'])
-            if mac_norm not in final_updates:
-                final_updates[mac_norm] = {}
-            final_updates[mac_norm].update(data)
+            mac = data['mac']
+            if mac not in final_updates:
+                final_updates[mac] = {}
+            final_updates[mac].update(data)
         
         for mac, data in final_updates.items():
             self._update_ui(mac, data)
@@ -373,62 +361,68 @@ class ClientManager:
         self.tree.column('mac', width=130, anchor=tk.W)
         self.tree.column('status', width=160, anchor=tk.W)
 
-    # =======================[ 修改后函数 ]=======================
     def _update_ui(self, mac, data_to_update):
-        mac_norm = self._normalize_mac(mac)
-        if not mac_norm: return # 如果MAC无效，则直接忽略
-
         def update_action():
-            is_probe_client = (mac_norm == PROBE_MAC)
+            is_probe_client = (mac.upper() == PROBE_MAC)
             final_status = data_to_update.get('status', None)
             
-            tags = ()
+            tags = () 
             if not is_probe_client and final_status:
-                if '在线' in final_status: tags = ('online_status',)
-                elif '离线' in final_status: tags = ('offline_status',)
-                else: tags = ('intermediate_status',)
+                if '在线' in final_status:
+                    tags = ('online_status',)
+                elif '离线' in final_status:
+                    tags = ('offline_status',)
+                else: 
+                    tags = ('intermediate_status',)
             
-            # 核心逻辑：严格以标准化后的MAC地址为准，更新或插入客户端条目。
-            if mac_norm in self.mac_to_iid and self.tree.exists(self.mac_to_iid[mac_norm]):
-                iid = self.mac_to_iid[mac_norm]
-                current_values = list(self.tree.item(iid, 'values'))
+            if mac in self.mac_to_iid:
+                iid = self.mac_to_iid[mac]
+                if not self.tree.exists(iid):
+                    if mac in self.mac_to_iid: del self.mac_to_iid[mac]
+                    return
+
+                vals = list(self.tree.item(iid, 'values'))
                 
-                # 合并更新
-                if data_to_update.get('firmware') and data_to_update.get('firmware') != '未知':
-                    current_values[1] = data_to_update['firmware']
-                if data_to_update.get('name'):
-                    current_values[2] = f"{self.CLIENT_SYMBOL} {data_to_update['name']}".strip()
-                if data_to_update.get('ip'):
-                    current_values[3] = data_to_update['ip']
-                current_values[4] = mac_norm # 确保UI上的MAC也是标准格式
-                if final_status:
-                    current_values[5] = final_status
+                current_display_name = vals[2]
+                clean_name = current_display_name.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
+                hostname = clean_name
                 
-                self.tree.item(iid, values=tuple(current_values), tags=tags)
+                if 'name' in data_to_update:
+                    hostname = data_to_update['name']
+
+                if 'firmware' in data_to_update: vals[1] = data_to_update['firmware']
+                if 'ip' in data_to_update: vals[3] = data_to_update['ip']
+                if final_status: vals[5] = final_status
+                vals[4] = mac.upper()
+
+                if is_probe_client:
+                    vals[0] = '*'; vals[1] = '*'; vals[2] = 'DHCP探测'; vals[5] = '*'
+                else:
+                    vals[2] = f"{self.CLIENT_SYMBOL} {hostname}".strip()
+                
+                self.tree.item(iid, values=tuple(vals), tags=tags)
             else:
-                # 插入新条目
                 seq = '*' if is_probe_client else self.client_counter + 1
                 hostname = data_to_update.get('name', '未知')
-                display_name = 'DHCP探测' if is_probe_client else f"{self.CLIENT_SYMBOL} {hostname}".strip()
+                
+                display_name = 'DHCP探测'
+                if not is_probe_client:
+                    display_name = f"{self.CLIENT_SYMBOL} {hostname}".strip()
                 
                 vals = (
                     seq, 
-                    data_to_update.get('firmware', '未知'),
+                    '*' if is_probe_client else data_to_update.get('firmware', '未知'),
                     display_name, 
                     data_to_update.get('ip', '未知'), 
-                    mac_norm, 
-                    final_status or "未知"
+                    mac.upper(), 
+                    '*' if is_probe_client else (final_status or "未知")
                 )
-                
-                # 对于探测客户端，特殊处理
-                if is_probe_client:
-                    vals = ('*', '*', 'DHCP探测', data_to_update.get('ip', '未知'), mac_norm, '*')
 
                 if not is_probe_client:
                     self.client_counter += 1
 
                 iid = self.tree.insert('', 0, values=vals, tags=tags)
-                self.mac_to_iid[mac_norm] = iid
+                self.mac_to_iid[mac] = iid
             
             if not is_probe_client:
                 self._save_config_to_ini()
@@ -447,15 +441,16 @@ class ClientManager:
             self.selection_order = [item for item in self.selection_order if item not in removed_items]
         self._last_selection_state = current_selection_set
 
-    # =======================[ 修改后函数 ]=======================
     def _load_config_from_ini(self):
         self.menu_config = []
         if not os.path.exists(CONFIG_INI_FILENAME):
             self.menu_config.append({'name': '远程', 'path': 'bin\\tvnviewer.exe', 'args': '%IP%'})
             self.menu_config.append({'name': 'NetCopy网络同传', 'path': 'cmd', 'args': '/c echo startup.bat netcopy| bin\\\\nc64.exe -t %IP% 6086'})
+            # --- 新增的菜单项 ---
             self.menu_config.append({'name': '重启客户机', 'path': 'cmd', 'args': '/c echo wpeutil reboot| bin\\\\nc64.exe -t %IP% 6086'})
             self.menu_config.append({'name': '关闭客户机', 'path': 'cmd', 'args': '/c echo wpeutil shutdown| bin\\\\nc64.exe -t %IP% 6086'})
-            self._save_config_to_ini()
+            # --- 修改结束 ---
+            self._save_config_to_ini() 
             return
 
         config = configparser.ConfigParser(interpolation=None)
@@ -469,29 +464,21 @@ class ClientManager:
             client_sections = [s for s in config.sections() if not s.startswith('Menu_')]
             if client_sections:
                 max_seq = 0
-                loaded_macs = set() # 确保不从INI加载重复项
-
-                sorted_clients = sorted(client_sections, key=lambda s: int(config[s].get('seq', 0)), reverse=True)
-                
-                for section_name in sorted_clients:
-                    mac_norm = self._normalize_mac(section_name)
-                    
-                    if not mac_norm or mac_norm in loaded_macs:
-                        if self.logger: self.logger(f"配置文件加载：跳过无效或重复的MAC地址条目 '{section_name}'", "WARNING")
-                        continue
-                    loaded_macs.add(mac_norm)
-                    
-                    client_data = config[section_name]
-                    seq = int(client_data.get('seq', 0))
+                sorted_clients = sorted(client_sections, key=lambda mac: int(config[mac].get('seq', 0)), reverse=True)
+                for mac in sorted_clients:
+                    mac_formatted = mac.replace(":", "-").upper()
+                    client_data = config[mac]; seq = int(client_data.get('seq', 0))
                     if seq > max_seq: max_seq = seq
-                    
                     status = client_data.get('status', '未知')
                     hostname = client_data.get('name', '未知')
                     
                     tags = ()
-                    if '在线' in status: tags = ('online_status',)
-                    elif '离线' in status: tags = ('offline_status',)
-                    else: tags = ('intermediate_status',)
+                    if '在线' in status:
+                        tags = ('online_status',)
+                    elif '离线' in status:
+                        tags = ('offline_status',)
+                    elif status and status != '未知':
+                        tags = ('intermediate_status',)
                     
                     display_name = f"{self.CLIENT_SYMBOL} {hostname}".strip()
                     
@@ -500,23 +487,78 @@ class ClientManager:
                         client_data.get('firmware', '未知'),
                         display_name, 
                         client_data.get('ip', '未知'), 
-                        mac_norm, # 确保UI上也是标准格式
+                        mac_formatted, 
                         status
                     )
                     
                     iid = self.tree.insert('', 0, values=values, tags=tags)
-                    self.mac_to_iid[mac_norm] = iid
+                    self.mac_to_iid[mac_formatted] = iid
                     
                     last_wim = client_data.get('last_wim', '')
                     if last_wim:
-                        self.mac_to_last_wim[mac_norm] = last_wim
+                        self.mac_to_last_wim[mac_formatted] = last_wim
 
                 self.client_counter = max_seq
         except Exception as e: 
-            if self.logger: self.logger(f"加载 {CONFIG_INI_FILENAME} 出错: {e}", "ERROR")
-            else: print(f"加载 {CONFIG_INI_FILENAME} 出错: {e}")
+            if self.logger: self.logger(f"Error loading {CONFIG_INI_FILENAME}: {e}", "ERROR")
+            else: print(f"Error loading {CONFIG_INI_FILENAME}: {e}")
+        self.menu_config = []
+        if not os.path.exists(CONFIG_INI_FILENAME):
+            self.menu_config.append({'name': '远程', 'path': 'bin\\tvnviewer.exe', 'args': '%IP%'})
+            self.menu_config.append({'name': 'NetCopy网络同传', 'path': 'cmd', 'args': '/c echo startup.bat netcopy| bin\\\\nc64.exe -t %IP% 6086'})
+            self._save_config_to_ini() 
+            return
 
-    # =======================[ 修改后函数 ]=======================
+        config = configparser.ConfigParser(interpolation=None)
+        try:
+            config.read(CONFIG_INI_FILENAME, encoding='utf-8')
+            if 'Menu_Order' in config and 'order' in config['Menu_Order']:
+                order = [key.strip() for key in config['Menu_Order']['order'].split(',')]
+                for item_key in order:
+                    if item_key in config: self.menu_config.append(dict(config[item_key]))
+            
+            client_sections = [s for s in config.sections() if not s.startswith('Menu_')]
+            if client_sections:
+                max_seq = 0
+                sorted_clients = sorted(client_sections, key=lambda mac: int(config[mac].get('seq', 0)), reverse=True)
+                for mac in sorted_clients:
+                    mac_formatted = mac.replace(":", "-").upper()
+                    client_data = config[mac]; seq = int(client_data.get('seq', 0))
+                    if seq > max_seq: max_seq = seq
+                    status = client_data.get('status', '未知')
+                    hostname = client_data.get('name', '未知')
+                    
+                    tags = ()
+                    if '在线' in status:
+                        tags = ('online_status',)
+                    elif '离线' in status:
+                        tags = ('offline_status',)
+                    elif status and status != '未知':
+                        tags = ('intermediate_status',)
+                    
+                    display_name = f"{self.CLIENT_SYMBOL} {hostname}".strip()
+                    
+                    values = (
+                        seq, 
+                        client_data.get('firmware', '未知'),
+                        display_name, 
+                        client_data.get('ip', '未知'), 
+                        mac_formatted, 
+                        status
+                    )
+                    
+                    iid = self.tree.insert('', 0, values=values, tags=tags)
+                    self.mac_to_iid[mac_formatted] = iid
+                    
+                    last_wim = client_data.get('last_wim', '')
+                    if last_wim:
+                        self.mac_to_last_wim[mac_formatted] = last_wim
+
+                self.client_counter = max_seq
+        except Exception as e: 
+            if self.logger: self.logger(f"Error loading {CONFIG_INI_FILENAME}: {e}", "ERROR")
+            else: print(f"Error loading {CONFIG_INI_FILENAME}: {e}")
+
     def _save_config_to_ini(self):
         config = configparser.ConfigParser(interpolation=None)
         order = []
@@ -524,24 +566,17 @@ class ClientManager:
             item_key = f'Menu_Item_{i+1}'; order.append(item_key)
             config[item_key] = item_data
         config['Menu_Order'] = {'order': ','.join(order)}
-        
-        # 使用一个集合来防止因意外情况导致重复保存
-        saved_macs = set()
-        
         for iid in self.tree.get_children(''):
             vals = self.tree.item(iid, 'values')
             if len(vals) == 6:
                 seq, firmware, name_with_symbol, ip, mac, status = vals
-                
-                mac_norm = self._normalize_mac(mac)
-                if not mac_norm or mac_norm == PROBE_MAC or mac_norm in saved_macs:
+                if mac.upper() == PROBE_MAC:
                     continue
-                saved_macs.add(mac_norm)
-
-                clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
                 
-                last_wim = self.mac_to_last_wim.get(mac_norm, '')
-                config[mac_norm] = {
+                clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
+
+                last_wim = self.mac_to_last_wim.get(mac, '')
+                config[mac] = {
                     'seq': str(seq), 
                     'firmware': str(firmware),
                     'name': str(clean_name), 
@@ -552,8 +587,8 @@ class ClientManager:
         try:
             with open(CONFIG_INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
         except Exception as e: 
-            if self.logger: self.logger(f"保存到 {CONFIG_INI_FILENAME} 出错: {e}", "ERROR")
-            else: print(f"保存到 {CONFIG_INI_FILENAME} 出错: {e}")
+            if self.logger: self.logger(f"Error saving to {CONFIG_INI_FILENAME}: {e}", "ERROR")
+            else: print(f"Error saving to {CONFIG_INI_FILENAME}: {e}")
 
     def _show_context_menu(self, event):
         iid = self.tree.identify_row(event.y)
@@ -651,9 +686,8 @@ class ClientManager:
         if messagebox.askyesno("确认删除", msg, parent=self.root):
             for iid in sel_iids:
                 mac = self.tree.item(iid, 'values')[4]
-                mac_norm = self._normalize_mac(mac)
-                if mac_norm in self.mac_to_iid: del self.mac_to_iid[mac_norm]
-                if mac_norm in self.mac_to_last_wim: del self.mac_to_last_wim[mac_norm]
+                if mac in self.mac_to_iid: del self.mac_to_iid[mac]
+                if mac in self.mac_to_last_wim: del self.mac_to_last_wim[mac]
                 self.tree.delete(iid)
             self._save_config_to_ini()
 
@@ -668,8 +702,7 @@ class ClientManager:
     
     def _send_wol_packet(self, mac_address):
         try:
-            mac_norm = self._normalize_mac(mac_address)
-            mac_bytes = bytes.fromhex(mac_norm.replace('-', ''))
+            mac_bytes = bytes.fromhex(mac_address.replace(':', '').replace('-', ''))
             if len(mac_bytes) != 6:
                 raise ValueError("无效的MAC地址格式")
             
@@ -709,18 +742,16 @@ class ClientManager:
         else:
             messagebox.showerror("操作失败", f"未能向任何选定的客户机发送唤醒指令。\n请检查MAC地址格式。", parent=self.root)
 
-    # =======================[ 修改后函数 ]=======================
     def handle_dhcp_request(self, mac, ip, state_hint, firmware_type=None, hostname=None):
-        mac_norm = self._normalize_mac(mac)
-        if not mac_norm: return # 忽略无效的MAC地址
-
+        mac_formatted = mac.replace(":", "-").upper()
+        
         with self.map_lock:
-            if ip and ip != '0.0.0.0': self.ip_to_mac[ip] = mac_norm
+            if ip and ip != '0.0.0.0': self.ip_to_mac[ip] = mac_formatted
         
         status = self.STATUS_MAP.get(state_hint, state_hint)
         
         if state_hint == 'msft_online':
-            last_wim = self.mac_to_last_wim.get(mac_norm)
+            last_wim = self.mac_to_last_wim.get(mac_formatted)
             status = f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")
                 
         update_data = {'status': status}
@@ -728,13 +759,13 @@ class ClientManager:
         if ip and ip != '0.0.0.0':
             update_data['ip'] = ip
         elif hostname:
-            if self.logger: self.logger(f"DHCP: 客户机 {mac_norm} 报告主机名 '{hostname}' 但无IP，尝试主动解析...", "DEBUG")
+            if self.logger: self.logger(f"DHCP: 客户机 {mac_formatted} 报告主机名 '{hostname}' 但无IP，尝试主动解析...", "DEBUG")
             resolved_ip = self._get_ip_from_hostname(hostname)
             if resolved_ip:
-                if self.logger: self.logger(f"DHCP: 成功将 '{hostname}' 解析为 {resolved_ip} (MAC: {mac_norm})", "INFO")
+                if self.logger: self.logger(f"DHCP: 成功将 '{hostname}' 解析为 {resolved_ip} (MAC: {mac_formatted})", "INFO")
                 update_data['ip'] = resolved_ip
                 with self.map_lock:
-                    self.ip_to_mac[resolved_ip] = mac_norm
+                    self.ip_to_mac[resolved_ip] = mac_formatted
         
         if hostname:
             update_data['name'] = hostname
@@ -742,7 +773,7 @@ class ClientManager:
         if firmware_type and state_hint != 'get_ip':
             update_data['firmware'] = firmware_type
         
-        self._update_ui(mac_norm, update_data)
+        self._update_ui(mac_formatted, update_data)
 
     def _get_mac_from_ip(self, ip):
         with self.map_lock: return self.ip_to_mac.get(ip)
@@ -770,11 +801,11 @@ class ClientManager:
     
     def remove_probe_client(self):
         def _remove_action():
-            probe_mac_norm = self._normalize_mac(PROBE_MAC)
-            if probe_mac_norm in self.mac_to_iid:
-                iid = self.mac_to_iid[probe_mac_norm]
+            probe_mac_upper = PROBE_MAC.upper()
+            if probe_mac_upper in self.mac_to_iid:
+                iid = self.mac_to_iid[probe_mac_upper]
                 if self.tree.exists(iid):
                     self.tree.delete(iid)
-                del self.mac_to_iid[probe_mac_norm]
+                del self.mac_to_iid[probe_mac_upper]
         
         self.root.after(100, _remove_action)
