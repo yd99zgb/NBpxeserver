@@ -32,9 +32,20 @@ from client import ClientManager
 
 log_queue = queue.Queue()
 LOG_FILENAME = 'nbpxe.log'
+# 文件: NBPxeServer.py
+
+# ...
 ip_to_mac_map = {}
 ip_map_lock = threading.Lock()
+
+# =======================[ 新增：失败日志聚合器 ]=======================
+failure_aggregator = {}
+aggregator_lock = threading.Lock()
+stop_aggregator_event = threading.Event()
+# =======================[ 修改结束 ]=======================
+
 client_manager = None
+# ...
 
 def log_message(message, level='INFO'):
     log_levels = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3}
@@ -841,7 +852,621 @@ def run_proxy_listener(cfg, stop_evt):
         except Exception as e: log_message(f"ProxyDHCP (4011): 循环中发生错误: {e}", "ERROR")
     sock.close(); log_message("ProxyDHCP (4011): 监听器已停止。")
 
+# 文件: NBPxeServer.py
+
+# ... (文件顶部的其他import和代码保持不变) ...
+
+# 文件: NBPxeServer.py
+
+# ... (文件顶部的其他代码保持不变) ...
+# 文件: NBPxeServer.py
+
+# ... (client_manager = None 的后面)
+
+def log_aggregated_failures():
+    """
+    这个函数在后台独立运行，像一个管家。
+    定期检查失败聚合器，只报告那些持续存在且未被成功传输所清除的真实失败。
+    """
+    while not stop_aggregator_event.is_set():
+        # 每15秒工作一次
+        stop_aggregator_event.wait(15)
+        if stop_aggregator_event.is_set():
+            break
+
+        with aggregator_lock:
+            now = time.time()
+            # 遍历键的副本以允许在循环中删除
+            for key, data in list(failure_aggregator.items()):
+                # 如果最后的失败记录发生在12秒前，我们就认为这是一个持续的真失败
+                if now - data['timestamp'] > 12:
+                    ip, filename = key.split(':', 1)
+                    count = data['count']
+                    # 打印汇总后的唯一错误日志
+                    log_message(f"TFTP: [传输失败] 客户端 {ip} 请求 '{filename}' 多次超时 ({count}次尝试)", "ERROR")
+                    # 清理掉这个已报告的条目
+                    del failure_aggregator[key]
+
+
+
+# 文件: NBPxeServer.py
+
+# ... (文件顶部的所有 import 和全局变量保持不变) ...
+
+# 确保这些全局变量存在
+# failure_aggregator = {}
+# aggregator_lock = threading.Lock()
+# stop_aggregator_event = threading.Event()
+
+# 确保这个后台函数存在
+def log_aggregated_failures():
+    """
+    这个函数在后台独立运行，像一个管家。
+    定期检查失败聚合器，只报告那些持续存在且未被成功传输所清除的真实失败。
+    """
+    while not stop_aggregator_event.is_set():
+        stop_aggregator_event.wait(15)
+        if stop_aggregator_event.is_set():
+            break
+
+        with aggregator_lock:
+            now = time.time()
+            for key, data in list(failure_aggregator.items()):
+                if now - data['timestamp'] > 12:
+                    ip, filename = key.split(':', 1)
+                    count = data['count']
+                    log_message(f"TFTP: [传输失败] 客户端 {ip} 请求 '{filename}' 多次超时 ({count}次尝试)", "ERROR")
+                    del failure_aggregator[key]
+
+# =======================[ 请从这里开始替换 ]=======================
 def run_tftp_server(cfg, stop_evt):
+    tftp_root = os.path.realpath(cfg['tftp_root'])
+    if not os.path.exists(tftp_root):
+        try:
+            os.makedirs(tftp_root)
+            log_message(f"TFTP: 已创建根目录 '{tftp_root}'")
+        except OSError as e:
+            log_message(f"TFTP: 创建根目录失败: {e}", "ERROR")
+            return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(1.0)
+    try:
+        sock.bind((cfg['listen_ip'], 69))
+    except Exception as e:
+        log_message(f"TFTP: 致命错误 - 无法绑定端口 69: {e}", "ERROR")
+        return
+
+    use_multithread = cfg.get('tftp_multithread', True)
+    executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='TFTP') if use_multithread else None
+    log_message(f"TFTP: 服务器已在 {cfg['listen_ip']}:69 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: '{tftp_root}')")
+
+    # 启动日志管家
+    # 清空可能残留的旧事件
+    stop_aggregator_event.clear()
+    failure_aggregator.clear()
+    aggregator_thread = threading.Thread(target=log_aggregated_failures, daemon=True)
+    aggregator_thread.start()
+
+    def handle_request(initial_data, client_addr):
+        filename = None
+        transfer_successful = False
+        opcode = 0
+        transfer_key = None
+        filepath = None # 确保 filepath 被定义
+
+        try:
+            temp_parts = initial_data[2:].split(b'\x00')
+            filename = temp_parts[0].decode('ascii', 'ignore')
+            transfer_key = f"{client_addr[0]}:{filename}"
+        except (IndexError, UnicodeDecodeError):
+            return
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
+                tsock.settimeout(5)
+
+                if len(initial_data) < 4: return
+                opcode = struct.unpack('!H', initial_data[:2])[0]
+                client_ip = client_addr[0]
+                
+                # --- READ (下载) 逻辑 (带日志聚合) ---
+                if opcode == 1:
+                    if client_manager:
+                        client_manager.handle_file_transfer_start(client_ip, filename)
+
+                    _filename = filename.replace('\\', '/').lstrip('/')
+                    filepath = os.path.realpath(os.path.join(tftp_root, _filename))
+
+                    if not filepath.startswith(tftp_root) or not os.path.isfile(filepath):
+                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法或不存在的文件 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', client_addr); return
+                    
+                    log_message(f"TFTP: [GET] {client_addr} 请求 '{filename}'")
+                    
+                    with open(filepath, 'rb') as f:
+                        block_num = 1
+                        while not stop_evt.is_set():
+                            chunk = f.read(512)
+                            data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            
+                            for retry in range(5):
+                                if stop_evt.is_set(): return
+                                tsock.sendto(data_pkt, client_addr)
+                                try:
+                                    ack_data, _ = tsock.recvfrom(512)
+                                    if len(ack_data) >= 4 and struct.unpack('!HH', ack_data[:4]) == (4, block_num):
+                                        break
+                                except socket.timeout:
+                                    continue
+                            else:
+                                with aggregator_lock:
+                                    if transfer_key not in failure_aggregator:
+                                        failure_aggregator[transfer_key] = {'count': 0, 'timestamp': 0}
+                                    failure_aggregator[transfer_key]['count'] += 1
+                                    failure_aggregator[transfer_key]['timestamp'] = time.time()
+                                return
+                            
+                            if len(chunk) < 512:
+                                transfer_successful = True
+                                with aggregator_lock:
+                                    if transfer_key in failure_aggregator:
+                                        del failure_aggregator[transfer_key]
+                                log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成。")
+                                break
+                            block_num = (block_num + 1) % 65536
+                
+                # --- WRITE (上传) 逻辑 (已按您的要求完全修复) ---
+                elif opcode == 2:
+                    log_message(f"TFTP: [WRITE] 收到来自 {client_addr} 对 '{filename}' 的上传请求。", "INFO")
+                    
+                    sanitized_filename = filename.replace('\\', '/').lstrip('/')
+                    
+                    if not sanitized_filename or '..' in sanitized_filename.split('/'):
+                        log_message(f"TFTP: [拒绝] 收到来自 {client_addr} 的无效或恶意文件名 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 4) + b'Illegal TFTP operation\x00', client_addr); return
+                    
+                    filepath = os.path.join(tftp_root, sanitized_filename)
+                    
+                    if not os.path.realpath(filepath).startswith(os.path.realpath(tftp_root)):
+                        log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的目录遍历尝试 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+                    
+                    # 检查文件是否存在，仅用于打印日志，不再拒绝
+                    if os.path.exists(filepath):
+                        log_message(f"TFTP: [警告] 文件 '{filepath}' 已存在。客户端 {client_addr} 即将覆盖该文件。", "WARNING")
+                    
+                    # 自动创建目录
+                    try:
+                        dir_path = os.path.dirname(filepath)
+                        if not os.path.exists(dir_path):
+                            os.makedirs(dir_path)
+                            log_message(f"TFTP: 已为上传创建目录 '{dir_path}'", "INFO")
+                    except OSError as e:
+                        log_message(f"TFTP: [拒绝] 无法为 '{sanitized_filename}' 创建目录: {e}", "ERROR")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+                    
+                    # 发送ACK 0，表示服务器已准备好接收
+                    tsock.sendto(struct.pack('!HH', 4, 0), client_addr)
+                    
+                    expected_block_num = 1
+                    total_bytes_written = 0
+                    with open(filepath, 'wb') as f: # 'wb'模式会直接创建或覆盖文件
+                        while True:
+                            data, addr = tsock.recvfrom(516)
+                            if len(data) < 4: continue
+                            opcode_data, block_num = struct.unpack('!HH', data[:4])
+                            if opcode_data == 5:
+                                log_message(f"TFTP: [写入中断] 客户端 {addr} 报告错误。", "WARNING")
+                                return
+                            if opcode_data != 3 or addr != client_addr:
+                                continue
+                            
+                            if block_num == expected_block_num:
+                                chunk = data[4:]
+                                f.write(chunk)
+                                total_bytes_written += len(chunk)
+                                tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
+                                expected_block_num = (expected_block_num + 1) % 65536
+                                if len(chunk) < 512:
+                                    log_message(f"TFTP: [写入成功] 文件 '{sanitized_filename}' ({total_bytes_written}字节) 已从 {client_addr} 接收完毕。")
+                                    transfer_successful = True
+                                    break
+                            elif block_num < expected_block_num: # 处理重发的旧数据块
+                                tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
+
+        except socket.timeout:
+            if transfer_key and opcode == 1:
+                with aggregator_lock:
+                    if transfer_key not in failure_aggregator:
+                        failure_aggregator[transfer_key] = {'count': 0, 'timestamp': 0}
+                    failure_aggregator[transfer_key]['count'] += 1
+                    failure_aggregator[transfer_key]['timestamp'] = time.time()
+        except ConnectionResetError:
+            transfer_successful = True
+        except Exception as e:
+            log_message(f"TFTP: 处理来自 {client_addr} 的请求时发生意外错误: {e}", "ERROR")
+        finally:
+            if client_manager and filename and transfer_successful:
+                if opcode == 1:
+                    client_manager.handle_file_transfer_complete(client_ip, filename)
+                elif opcode == 2:
+                    client_manager.handle_file_upload_complete(client_ip, filename)
+            
+            # 确认：没有任何删除文件的逻辑。
+
+    try:
+        while not stop_evt.is_set():
+            try:
+                data, addr = sock.recvfrom(1500)
+                if use_multithread and executor:
+                    executor.submit(handle_request, data, addr)
+                else:
+                    threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+    finally:
+        stop_aggregator_event.set()
+        aggregator_thread.join(timeout=1.5)
+        if executor: executor.shutdown(wait=False)
+        sock.close()
+        log_message("TFTP: 服务器已停止。")
+# =======================[ 请替换到这里结束 ]=======================
+    tftp_root = os.path.realpath(cfg['tftp_root'])
+    if not os.path.exists(tftp_root):
+        try:
+            os.makedirs(tftp_root)
+            log_message(f"TFTP: 已创建根目录 '{tftp_root}'")
+        except OSError as e:
+            log_message(f"TFTP: 创建根目录失败: {e}", "ERROR")
+            return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(1.0)
+    try:
+        sock.bind((cfg['listen_ip'], 69))
+    except Exception as e:
+        log_message(f"TFTP: 致命错误 - 无法绑定端口 69: {e}", "ERROR")
+        return
+
+    use_multithread = cfg.get('tftp_multithread', True)
+    executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='TFTP') if use_multithread else None
+    log_message(f"TFTP: 服务器已在 {cfg['listen_ip']}:69 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: '{tftp_root}')")
+
+    def handle_request(initial_data, client_addr):
+        filepath = None
+        filename = None
+        transfer_successful = False
+        opcode = 0
+        
+        # =======================[ 逻辑修改点 1 ]=======================
+        # 提前解析文件名，为智能日志创建唯一标识
+        transfer_key = None
+        try:
+            temp_parts = initial_data[2:].split(b'\x00')
+            filename = temp_parts[0].decode('ascii', 'ignore')
+            transfer_key = f"{client_addr[0]}:{filename}"
+        except (IndexError, UnicodeDecodeError):
+            return # 无效的请求，直接忽略
+        # =======================[ 修改结束 ]=======================
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
+                tsock.settimeout(5)
+
+                if len(initial_data) < 4: return
+                opcode = struct.unpack('!H', initial_data[:2])[0]
+                client_ip = client_addr[0]
+                
+                if opcode == 1: # READ (下载)
+                    if client_manager:
+                        client_manager.handle_file_transfer_start(client_ip, filename)
+
+                    _filename = filename.replace('\\', '/').lstrip('/')
+                    filepath = os.path.realpath(os.path.join(tftp_root, _filename))
+
+                    if not filepath.startswith(tftp_root) or not os.path.isfile(filepath):
+                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法或不存在的文件 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', client_addr); return
+                    
+                    log_message(f"TFTP: [GET] {client_addr} 请求 '{filename}'")
+                    start_time = time.time(); file_size = os.path.getsize(filepath)
+                    
+                    # (这里的OACK兼容性代码保持上一版的优化)
+                    blksize = 512
+                    parts = initial_data[2:].split(b'\x00')
+                    is_modern_client = len(parts) > 3 and parts[1].lower() == b'octet'
+                    if is_modern_client:
+                        # ... (OACK协商逻辑，无需改动)
+                        pass
+
+                    with open(filepath, 'rb') as f:
+                        block_num = 1
+                        while not stop_evt.is_set():
+                            chunk = f.read(blksize)
+                            data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            
+                            for retry in range(5):
+                                if stop_evt.is_set(): return
+                                tsock.sendto(data_pkt, client_addr)
+                                try:
+                                    ack_data, _ = tsock.recvfrom(512)
+                                    if len(ack_data) >= 4:
+                                        ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
+                                        if ack_opcode == 4 and ack_block_num == block_num:
+                                            break
+                                except socket.timeout:
+                                    continue
+                            else:
+                                # =======================[ 逻辑修改点 2 ]=======================
+                                # 在记录失败日志前，检查任务是否已被其他线程完成
+                                with transfer_lock:
+                                    if transfer_key in completed_transfers:
+                                        log_message(f"TFTP: [抑制日志] 针对 {client_addr} 的一个冗余请求超时，但任务已完成。", "DEBUG")
+                                        return # 安静地退出
+                                
+                                log_message(f"TFTP: [传输失败] 等待 {client_addr} 对块 {block_num} 的ACK多次超时", "ERROR")
+                                # =======================[ 修改结束 ]=======================
+                                return
+                            
+                            if len(chunk) < blksize:
+                                end_time = time.time(); elapsed_time = end_time - start_time
+                                transfer_successful = True # <--- 标记成功
+                                
+                                # =======================[ 逻辑修改点 3 ]=======================
+                                # 传输成功后，将记录添加到成功缓存中
+                                with transfer_lock:
+                                    completed_transfers.append(transfer_key)
+                                # =======================[ 修改结束 ]=======================
+
+                                if elapsed_time > 0.001:
+                                    speed_bps = file_size / elapsed_time
+                                    speed_formatted = f"{speed_bps/(1024*1024):.2f} MB/s"
+                                    log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成 ({speed_formatted})。")
+                                else:
+                                    log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成 (瞬时)。")
+                                break
+                            block_num = (block_num + 1) % 65536
+                
+                elif opcode == 2: # WRITE (上传) 逻辑保持不变
+                    # ...
+                    pass
+                
+        except socket.timeout:
+             # =======================[ 逻辑修改点 4 ]=======================
+             # 同样，在记录超时失败前，检查任务是否已完成
+            with transfer_lock:
+                if transfer_key in completed_transfers:
+                    log_message(f"TFTP: [抑制日志] 针对 {client_addr} 的一个冗余请求超时，但任务已完成。", "DEBUG")
+                    return # 安静地退出
+            log_message(f"TFTP: [超时] 与客户端 {client_addr} 的通信超时。", "ERROR")
+            # =======================[ 修改结束 ]=======================
+        except ConnectionResetError:
+            log_message(f"TFTP: 客户端 {client_addr} 已关闭连接 (可能传输已完成)。", "INFO")
+            transfer_successful = True
+        except Exception as e:
+            log_message(f"TFTP: 处理来自 {client_addr} 的请求时发生意外错误: {e}", "ERROR")
+        finally:
+            if client_manager and filename and transfer_successful:
+                if opcode == 1:
+                    client_manager.handle_file_transfer_complete(client_ip, filename)
+                elif opcode == 2:
+                    client_manager.handle_file_upload_complete(client_ip, filename)
+
+    try:
+        while not stop_evt.is_set():
+            try:
+                data, addr = sock.recvfrom(1500)
+                if use_multithread and executor:
+                    executor.submit(handle_request, data, addr)
+                else:
+                    threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+    finally:
+        if executor: executor.shutdown(wait=False)
+        sock.close()
+        log_message("TFTP: 服务器已停止。")
+
+# ... (文件剩余部分的代码保持不变) ...
+    tftp_root = os.path.realpath(cfg['tftp_root'])
+    if not os.path.exists(tftp_root):
+        try:
+            os.makedirs(tftp_root)
+            log_message(f"TFTP: 已创建根目录 '{tftp_root}'")
+        except OSError as e:
+            log_message(f"TFTP: 创建根目录失败: {e}", "ERROR")
+            return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(1.0)
+    try:
+        sock.bind((cfg['listen_ip'], 69))
+    except Exception as e:
+        log_message(f"TFTP: 致命错误 - 无法绑定端口 69: {e}", "ERROR")
+        return
+
+    use_multithread = cfg.get('tftp_multithread', True)
+    executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='TFTP') if use_multithread else None
+    log_message(f"TFTP: 服务器已在 {cfg['listen_ip']}:69 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: '{tftp_root}')")
+
+    # =======================[ 修改点开始 ]=======================
+    def handle_request(initial_data, client_addr):
+        filepath = None
+        filename = None
+        transfer_successful = False
+        opcode = 0
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
+                tsock.settimeout(5)
+
+                if len(initial_data) < 4: return
+                opcode = struct.unpack('!H', initial_data[:2])[0]
+                parts = initial_data[2:].split(b'\x00')
+                filename = parts[0].decode('ascii', 'ignore')
+                client_ip = client_addr[0]
+                
+                if opcode == 1: # READ (下载)
+                    if client_manager:
+                        client_manager.handle_file_transfer_start(client_ip, filename)
+
+                    filename = filename.replace('\\', '/').lstrip('/')
+                    filepath = os.path.realpath(os.path.join(tftp_root, filename))
+
+                    if not filepath.startswith(tftp_root) or not os.path.isfile(filepath):
+                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法或不存在的文件 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', client_addr); return
+                    
+                    log_message(f"TFTP: [GET] {client_addr} 请求 '{filename}'")
+                    start_time = time.time(); file_size = os.path.getsize(filepath)
+                    
+                    blksize = 512
+                    negotiated_options = False
+                    is_modern_client = len(parts) > 3 and parts[1].lower() == b'octet'
+
+                    if is_modern_client:
+                        options = {parts[i].lower(): parts[i+1] for i in range(2, len(parts) - 1, 2)}
+                        oack_parts = []
+                        negotiated_blksize = 512
+                        
+                        if b'blksize' in options:
+                            try:
+                                # 协商一个合理的块大小，防止过大导致IP分片
+                                negotiated_blksize = max(512, min(int(options[b'blksize']), 1428))
+                                oack_parts.append(b'blksize\x00' + str(negotiated_blksize).encode() + b'\x00')
+                            except (ValueError, IndexError): pass
+                        if b'tsize' in options: oack_parts.append(b'tsize\x00' + str(file_size).encode() + b'\x00')
+
+                        if oack_parts:
+                            oack_pkt = bytearray(struct.pack('!H', 6)); [oack_pkt.extend(p) for p in oack_parts]
+                            tsock.sendto(oack_pkt, client_addr)
+                            
+                            try:
+                                # 等待客户端对OACK的确认 (ACK 0)，超时设为1秒
+                                tsock.settimeout(1.0)
+                                ack_data, _ = tsock.recvfrom(512)
+                                if len(ack_data) >= 4:
+                                    ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
+                                    if ack_opcode == 4 and ack_block_num == 0:
+                                        log_message(f"TFTP: {client_addr} 已确认OACK (blksize={negotiated_blksize})。开始快速传输。", "INFO")
+                                        blksize = negotiated_blksize
+                                        negotiated_options = True
+                                    else: # 收到非预期的包
+                                        log_message(f"TFTP: {client_addr} 对OACK响应异常，回退至标准模式。", "WARNING")
+                                else: # 包太短
+                                    log_message(f"TFTP: {client_addr} 发送了无效的OACK确认，回退至标准模式。", "WARNING")
+                            except socket.timeout:
+                                log_message(f"TFTP: {client_addr} 未确认OACK，回退至标准模式。", "INFO")
+                            
+                            # 恢复后续数据传输的超时时间
+                            tsock.settimeout(5.0)
+
+                    with open(filepath, 'rb') as f:
+                        block_num = 1
+                        while not stop_evt.is_set():
+                            chunk = f.read(blksize)
+                            data_pkt = struct.pack('!HH', 3, block_num) + chunk
+                            
+                            for retry in range(5):
+                                if stop_evt.is_set(): return
+                                tsock.sendto(data_pkt, client_addr)
+                                try:
+                                    ack_data, _ = tsock.recvfrom(512)
+                                    if len(ack_data) >= 4:
+                                        ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
+                                        if ack_opcode == 4 and ack_block_num == block_num:
+                                            break
+                                        elif ack_opcode == 5:
+                                            log_message(f"TFTP: [传输中断] 客户端报告错误: {ack_data[4:].decode(errors='ignore')}", "ERROR")
+                                            return
+                                except socket.timeout:
+                                    continue
+                            else:
+                                log_message(f"TFTP: [传输失败] 等待 {client_addr} 对块 {block_num} 的ACK多次超时", "ERROR")
+                                return
+                            
+                            if len(chunk) < blksize:
+                                end_time = time.time(); elapsed_time = end_time - start_time
+                                transfer_successful = True
+                                if elapsed_time > 0.001:
+                                    speed_bps = file_size / elapsed_time
+                                    speed_formatted = (f"{speed_bps/(1024*1024):.2f} MB/s" if speed_bps > 1024*1024 else f"{speed_bps/1024:.2f} KB/s" if speed_bps > 1024 else f"{speed_bps:.2f} B/s")
+                                    log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成 ({speed_formatted})。")
+                                else:
+                                    log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成 (瞬时)。")
+                                break
+                            block_num = (block_num + 1) % 65536
+                
+                elif opcode == 2: # WRITE (上传) 逻辑 (保持不变)
+                    log_message(f"TFTP: [WRITE] 收到来自 {client_addr} 对 '{filename}' 的上传请求。", "INFO")
+                    sanitized_filename = filename.replace('\\', '/').lstrip('/')
+                    if not sanitized_filename or '..' in sanitized_filename.split('/'):
+                        log_message(f"TFTP: [拒绝] 收到来自 {client_addr} 的无效或恶意文件名 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 4) + b'Illegal TFTP operation\x00', client_addr); return
+                    filepath = os.path.join(tftp_root, sanitized_filename)
+                    if not os.path.realpath(filepath).startswith(os.path.realpath(tftp_root)):
+                        log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的目录遍历尝试 '{filename}'", "WARNING")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+                    if os.path.exists(filepath):
+                        log_message(f"TFTP: [警告] 文件 '{filepath}' 已存在。客户端 {client_addr} 即将覆盖该文件。", "WARNING")
+                    try:
+                        dir_path = os.path.dirname(filepath)
+                        if not os.path.exists(dir_path): os.makedirs(dir_path)
+                    except OSError as e:
+                        log_message(f"TFTP: [拒绝] 无法为 '{sanitized_filename}' 创建目录: {e}", "ERROR")
+                        tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
+                    tsock.sendto(struct.pack('!HH', 4, 0), client_addr)
+                    expected_block_num = 1
+                    total_bytes_written = 0
+                    with open(filepath, 'wb') as f:
+                        while True:
+                            data, addr = tsock.recvfrom(516)
+                            if len(data) < 4: continue
+                            opcode_data, block_num = struct.unpack('!HH', data[:4])
+                            if opcode_data == 5: log_message(f"TFTP: [写入中断] 客户端 {addr} 报告错误。", "WARNING"); return
+                            if opcode_data != 3 or addr != client_addr: continue
+                            if block_num == expected_block_num:
+                                chunk = data[4:]; f.write(chunk); total_bytes_written += len(chunk)
+                                tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
+                                expected_block_num = (expected_block_num + 1) % 65536
+                                if len(chunk) < 512:
+                                    log_message(f"TFTP: [写入成功] 文件 '{sanitized_filename}' ({total_bytes_written}字节) 已从 {client_addr} 接收完毕。")
+                                    transfer_successful = True
+                                    break
+                            elif block_num < expected_block_num:
+                                tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
+                
+        except socket.timeout:
+            log_message(f"TFTP: [超时] 与客户端 {client_addr} 的通信超时。", "ERROR")
+        except ConnectionResetError:
+            log_message(f"TFTP: 客户端 {client_addr} 已关闭连接 (可能传输已完成)。", "INFO")
+            transfer_successful = True
+        except Exception as e:
+            log_message(f"TFTP: 处理来自 {client_addr} 的请求时发生意外错误: {e}", "ERROR")
+        finally:
+            if client_manager and filename and transfer_successful:
+                if opcode == 1:
+                    client_manager.handle_file_transfer_complete(client_ip, filename)
+                elif opcode == 2:
+                    client_manager.handle_file_upload_complete(client_ip, filename)
+
+    # =======================[ 修改点结束 ]=======================
+    try:
+        while not stop_evt.is_set():
+            try:
+                data, addr = sock.recvfrom(1500)
+                if use_multithread and executor:
+                    executor.submit(handle_request, data, addr)
+                else:
+                    threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+    finally:
+        if executor: executor.shutdown(wait=False)
+        sock.close()
+        log_message("TFTP: 服务器已停止。")
+
+# ... (文件剩余部分的代码保持不变) ...
     tftp_root = os.path.realpath(cfg['tftp_root'])
     if not os.path.exists(tftp_root):
         try:
