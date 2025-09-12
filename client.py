@@ -562,6 +562,13 @@ class ClientManager:
             self.menu_config.extend([
                 {'name': '远程', 'path': 'bin\\tvnviewer.exe', 'args': '%IP%'},
                 {'name': 'NetCopy网络同传', 'path': 'cmd', 'args': '/c echo startup.bat netcopy| bin\\\\nc64.exe -t %IP% 6086'},
+                {'name': 'NetGhost经典网克', 'path': 'cmd', 'args': '/c echo startup.bat netghost| bin\\\\nc64.exe -t %IP% 6086'},
+                {'name': '仅多播', 'path': 'cmd', 'args': '/c echo startup.bat cloud now| bin\\\\nc64.exe -t %IP% 6086'},
+                {'name': '仅P2P', 'path': 'cmd', 'args': '/c echo startup.bat btonly now| bin\\\\nc64.exe -t %IP% 6086'},
+                {'name': '仅Hou多播', 'path': 'cmd', 'args': '/c echo startup.bat "start "" houcx86" I:\ shell| bin\\\\nc64.exe -t %IP% 6086'},
+                {'name': '下发BT.torrent', 'path': 'cmd', 'args': '/c echo startup.bat xdown bt.torrent| bin\\\\nc64.exe -t %IP% 6086'},
+                {'name': '下发NB.nbp运行', 'path': 'cmd', 'args': '/c echo startup.bat xrun nb.nbp| bin\\\\nc64.exe -t %IP% 6086'},
+                {'name': '结束所有任务', 'path': 'cmd', 'args': '/c echo startup.bat kill now| bin\\\\nc64.exe -t %IP% 6086'},
                 {'name': '重启客户机', 'path': 'cmd', 'args': '/c echo wpeutil reboot| bin\\\\nc64.exe -t %IP% 6086'},
                 {'name': '关闭客户机', 'path': 'cmd', 'args': '/c echo wpeutil shutdown| bin\\\\nc64.exe -t %IP% 6086'}
             ]); self._save_config_to_ini(); return
