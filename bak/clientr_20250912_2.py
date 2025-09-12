@@ -10,7 +10,6 @@ import shlex
 import socket
 import time
 import re
-import json
 from tkinter.scrolledtext import ScrolledText
 
 # --- 文件名常量 ---
@@ -300,7 +299,7 @@ class MenuEditDialog(tk.Toplevel):
         ttk.Entry(self, textvariable=self.path_var, width=40).grid(row=1, column=1, padx=10, pady=5)
         ttk.Label(self, text="命令参数:").grid(row=2, column=0, sticky="w", padx=10, pady=5)
         ttk.Entry(self, textvariable=self.args_var, width=40).grid(row=2, column=1, padx=10, pady=5)
-        ttk.Label(self, text="占位符: %IP%, %MAC%, %NAME%, %STATUS%, %FIRMWARE%, %DISKHEALTH%, %NETSPEED%", foreground="grey").grid(row=3, column=1, sticky="w", padx=10)
+        ttk.Label(self, text="占位符: %IP%, %MAC%, %NAME%, %STATUS%, %FIRMWARE%", foreground="grey").grid(row=3, column=1, sticky="w", padx=10)
         btn_frame = ttk.Frame(self)
         btn_frame.grid(row=4, column=0, columnspan=2, pady=10)
         ttk.Button(btn_frame, text="确定", command=self.on_ok).pack(side="left", padx=5)
@@ -394,32 +393,23 @@ class MenuConfigWindow(tk.Toplevel):
 class ClientManager:
     CLIENT_SYMBOL = "\U0001F4BB" 
 
-    def __init__(self, parent_frame, logger=None, settings=None):
+    def __init__(self, parent_frame, logger=None):
         self.root = parent_frame.winfo_toplevel()
         self.frame = ttk.Frame(parent_frame)
         self.client_counter = 0; self.mac_to_iid = {}; self.ip_to_mac = {}; self.map_lock = threading.Lock()
         self.logger = logger
-        self.settings = settings
         self.mac_to_last_wim = {}
         self.last_checked_index = 0
         self.CLIENTS_TO_CHECK_PER_CYCLE = 5
-        self.STATUS_MAP = {
-            'pxe': 'PXE', 'pxemenu': 'PXE菜单', 'ipxe': 'iPXE', 'online': '在线',
-            'transfer_pe': '传输',
-            'booting_pe': '启动',
-            'get_ip': '获取IP', 'msft_online': '在线', 'offline': '离线',
-            'win_get_ip': 'Windows获取IP'
-        }
+        self.STATUS_MAP = {'pxe': 'PXE', 'pxemenu': 'PXE菜单', 'ipxe': 'iPXE', 'online': '在线', 'transfer_pe': '传输PE', 'booting_pe': '启动PE', 'get_ip': '获取IP', 'msft_online': '在线', 'offline': '离线'}
         self.selection_order = []
         self._last_selection_state = set()
-        columns = ('#', 'firmware', 'name', 'ip', 'mac', 'status', 'disk_health', 'net_speed')
+        columns = ('#', 'firmware', 'name', 'ip', 'mac', 'status')
         self.tree = ttk.Treeview(self.frame, columns=columns, show='headings', selectmode='extended')
         self._setup_treeview_columns()
         self.tree.tag_configure('online_status', background='#e6ffed', font=('Helvetica', 9, 'bold'))
         self.tree.tag_configure('offline_status', foreground='grey')
         self.tree.tag_configure('intermediate_status', font=('Helvetica', 9, 'bold'))
-        self.tree.tag_configure('health_ok', foreground='green')
-        self.tree.tag_configure('health_bad', foreground='red', font=('Helvetica', 9, 'bold'))
         scrollbar = ttk.Scrollbar(self.frame, orient=tk.VERTICAL, command=self.tree.yview); self.tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
@@ -484,8 +474,8 @@ class ClientManager:
             try:
                 if not self.tree.exists(iid): continue
                 current_values = self.tree.item(iid, 'values')
-                if not current_values or len(current_values) < 8: continue
-                _, _, name_with_symbol, current_ip, mac, current_status, _, _ = current_values
+                if not current_values or len(current_values) < 6: continue
+                _, _, name_with_symbol, current_ip, mac, current_status = current_values
             except tk.TclError: current_scan_index = (current_scan_index + 1) % len(all_iids); continue
             if "在线" not in current_status and "离线" not in current_status: current_scan_index = (current_scan_index + 1) % len(all_iids); continue
             checked_count += 1
@@ -527,43 +517,30 @@ class ClientManager:
     def pack(self, *args, **kwargs): self.frame.pack(*args, **kwargs)
     
     def _setup_treeview_columns(self):
-        headings = {'#': '序号', 'firmware': '固件', 'name': '计算机名', 'ip': 'IP地址', 'mac': 'MAC地址', 'status': '状态', 'disk_health': '硬盘健康', 'net_speed': '网卡速率'}
-        widths = {'#': 40, 'firmware': 50, 'name': 110, 'ip': 110, 'mac': 120, 'status': 120, 'disk_health': 80, 'net_speed': 80}
+        headings = {'#': '序号', 'firmware': '固件', 'name': '计算机名', 'ip': 'IP地址', 'mac': 'MAC地址', 'status': '状态'}
+        widths = {'#': 40, 'firmware': 60, 'name': 190, 'ip': 120, 'mac': 130, 'status': 160}
         for col, text in headings.items(): self.tree.heading(col, text=text)
-        for col, width in widths.items(): self.tree.column(col, width=width, anchor=tk.W if col not in ['#', 'firmware', 'disk_health', 'net_speed'] else tk.CENTER, stretch=col not in ['#', 'firmware'])
+        for col, width in widths.items(): self.tree.column(col, width=width, anchor=tk.W if col not in ['#', 'firmware'] else tk.CENTER, stretch=col not in ['#', 'firmware'])
 
     def _update_ui(self, mac, data_to_update):
         mac_norm = self._normalize_mac(mac)
         if not mac_norm: return
         def update_action():
             is_probe_client = (mac_norm == PROBE_MAC)
-            final_status = data_to_update.get('status', None)
-            tags = ()
-            if not is_probe_client and final_status: 
-                tags = ('online_status',) if '在线' in final_status else ('offline_status',) if '离线' in final_status else ('intermediate_status',)
-            
-            health = data_to_update.get('disk_health')
-            if health:
-                tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
-
+            final_status, tags = data_to_update.get('status', None), ()
+            if not is_probe_client and final_status: tags = ('online_status',) if '在线' in final_status else ('offline_status',) if '离线' in final_status else ('intermediate_status',)
             if mac_norm in self.mac_to_iid and self.tree.exists(self.mac_to_iid[mac_norm]):
-                iid = self.mac_to_iid[mac_norm]
-                current_values = list(self.tree.item(iid, 'values'))
-                current_values.extend(['未知'] * (8 - len(current_values))) # 确保列表有8个元素
-                
+                iid = self.mac_to_iid[mac_norm]; current_values = list(self.tree.item(iid, 'values'))
                 if data_to_update.get('firmware', '未知') != '未知': current_values[1] = data_to_update['firmware']
                 if 'name' in data_to_update: current_values[2] = f"{self.CLIENT_SYMBOL} {data_to_update['name']}".strip()
                 if 'ip' in data_to_update: current_values[3] = data_to_update['ip']
                 current_values[4] = mac_norm
                 if final_status: current_values[5] = final_status
-                if 'disk_health' in data_to_update: current_values[6] = data_to_update['disk_health']
-                if 'net_speed' in data_to_update: current_values[7] = data_to_update['net_speed']
                 self.tree.item(iid, values=tuple(current_values), tags=tags)
             else:
                 seq = '*' if is_probe_client else self.client_counter + 1
-                hostname = data_to_update.get('name', '未知')
-                display_name = 'DHCP探测' if is_probe_client else f"{self.CLIENT_SYMBOL} {hostname}".strip()
-                vals = ('*', '*', display_name, data_to_update.get('ip', '未知'), mac_norm, '*', '未知', '未知') if is_probe_client else (seq, data_to_update.get('firmware', '未知'), display_name, data_to_update.get('ip', '未知'), mac_norm, final_status or "未知", data_to_update.get('disk_health', '未知'), data_to_update.get('net_speed', '未知'))
+                hostname, display_name = data_to_update.get('name', '未知'), 'DHCP探测' if is_probe_client else f"{self.CLIENT_SYMBOL} {data_to_update.get('name', '未知')}".strip()
+                vals = ('*', '*', 'DHCP探测', data_to_update.get('ip', '未知'), mac_norm, '*') if is_probe_client else (seq, data_to_update.get('firmware', '未知'), display_name, data_to_update.get('ip', '未知'), mac_norm, final_status or "未知")
                 if not is_probe_client: self.client_counter += 1
                 iid = self.tree.insert('', 0, values=vals, tags=tags); self.mac_to_iid[mac_norm] = iid
             if not is_probe_client: self._save_config_to_ini()
@@ -611,12 +588,8 @@ class ClientManager:
                 client_data = config[section_name]
                 seq = int(client_data.get('seq', 0)); max_seq = max(max_seq, seq)
                 status, hostname = client_data.get('status', '未知'), client_data.get('name', '未知')
-                health = client_data.get('disk_health', '未知')
-                
                 tags = ('online_status',) if '在线' in status else ('offline_status',) if '离线' in status else ('intermediate_status',)
-                tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
-
-                values = (seq, client_data.get('firmware', '未知'), f"{self.CLIENT_SYMBOL} {hostname}".strip(), client_data.get('ip', '未知'), mac_norm, status, health, client_data.get('net_speed', '未知'))
+                values = (seq, client_data.get('firmware', '未知'), f"{self.CLIENT_SYMBOL} {hostname}".strip(), client_data.get('ip', '未知'), mac_norm, status)
                 iid = self.tree.insert('', 0, values=values, tags=tags); self.mac_to_iid[mac_norm] = iid
                 self.mac_to_last_wim[mac_norm] = client_data.get('last_wim', '')
             self.client_counter = max_seq
@@ -632,23 +605,14 @@ class ClientManager:
         saved_macs = set()
         for iid in self.tree.get_children(''):
             vals = self.tree.item(iid, 'values')
-            if len(vals) == 8:
-                seq, firmware, name_with_symbol, ip, mac, status, health, speed = vals
+            if len(vals) == 6:
+                seq, firmware, name_with_symbol, ip, mac, status = vals
                 mac_norm = self._normalize_mac(mac)
                 if not mac_norm or mac_norm == PROBE_MAC or mac_norm in saved_macs: continue
                 saved_macs.add(mac_norm)
                 clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
                 last_wim = self.mac_to_last_wim.get(mac_norm, '')
-                config[mac_norm] = {
-                    'seq': str(seq), 
-                    'firmware': str(firmware), 
-                    'name': clean_name, 
-                    'ip': str(ip), 
-                    'status': str(status), 
-                    'last_wim': last_wim,
-                    'disk_health': str(health),
-                    'net_speed': str(speed)
-                }
+                config[mac_norm] = {'seq': str(seq), 'firmware': str(firmware), 'name': clean_name, 'ip': str(ip), 'status': str(status), 'last_wim': last_wim}
         try:
             with open(CONFIG_INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
         except Exception as e: 
@@ -693,7 +657,7 @@ class ClientManager:
         if not filepath: return
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
-                for iid in ordered_selection: _, _, _, ip, mac, _, _, _ = self.tree.item(iid, 'values'); f.write(f"{ip}\t{mac}\n")
+                for iid in ordered_selection: _, _, _, ip, mac, _ = self.tree.item(iid, 'values'); f.write(f"{ip}\t{mac}\n")
             messagebox.showinfo("导出成功", f"成功导出 {len(ordered_selection)} 条记录到\n{filepath}", parent=self.root)
         except Exception as e: messagebox.showerror("导出失败", f"无法写入文件: {e}", parent=self.root)
 
@@ -701,11 +665,9 @@ class ClientManager:
         ordered_selection = [item for item in self.selection_order if item in self.tree.selection()]
         if not ordered_selection: return
         for iid in ordered_selection:
-            vals = self.tree.item(iid, 'values')
-            if len(vals) < 8: continue
-            _, firmware, name_with_symbol, ip, mac, status, health, speed = vals
+            _, firmware, name_with_symbol, ip, mac, status = self.tree.item(iid, 'values')
             clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
-            final_args = args.replace('%IP%', ip).replace('%MAC%', mac).replace('%NAME%', clean_name).replace('%STATUS%', status).replace('%FIRMWARE%', firmware).replace('%DISKHEALTH%', health).replace('%NETSPEED%', speed)
+            final_args = args.replace('%IP%', ip).replace('%MAC%', mac).replace('%NAME%', clean_name).replace('%STATUS%', status).replace('%FIRMWARE%', firmware)
             if '%IP%' in final_args and ip == '未知': messagebox.showwarning("执行失败", f"客户机 {mac} 没有有效的IP地址，已跳过。", parent=self.root); continue
             try: subprocess.Popen([path] + shlex.split(final_args))
             except FileNotFoundError: messagebox.showerror("执行失败", f"无法找到程序: '{path}'", parent=self.root); return
@@ -760,32 +722,19 @@ class ClientManager:
     def handle_dhcp_request(self, mac, ip, state_hint, firmware_type=None, hostname=None):
         mac_norm = self._normalize_mac(mac)
         if not mac_norm: return
-        
         with self.map_lock:
-            if ip and ip != '0.0.0.0':
-                self.ip_to_mac[ip] = mac_norm
-
+            if ip and ip != '0.0.0.0': self.ip_to_mac[ip] = mac_norm
         status = self.STATUS_MAP.get(state_hint, state_hint)
         if state_hint == 'msft_online':
             last_wim = self.mac_to_last_wim.get(mac_norm)
             status = f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")
-        
         update_data = {'status': status}
-        if ip and ip != '0.0.0.0':
-            update_data['ip'] = ip
+        if ip and ip != '0.0.0.0': update_data['ip'] = ip
         elif hostname:
             resolved_ip = self._get_ip_from_hostname(hostname)
-            if resolved_ip:
-                update_data['ip'] = resolved_ip
-                with self.map_lock:
-                    self.ip_to_mac[resolved_ip] = mac_norm
-
-        if hostname:
-            update_data['name'] = hostname
-        
-        if firmware_type and state_hint != 'get_ip':
-            update_data['firmware'] = firmware_type
-            
+            if resolved_ip: update_data['ip'] = resolved_ip; self.ip_to_mac[resolved_ip] = mac_norm
+        if hostname: update_data['name'] = hostname
+        if firmware_type and state_hint != 'get_ip': update_data['firmware'] = firmware_type
         self._update_ui(mac_norm, update_data)
 
     def _get_mac_from_ip(self, ip):
@@ -793,8 +742,7 @@ class ClientManager:
 
     def handle_file_transfer_start(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
-        if mac and filename.lower().endswith('.wim'):
-            self._update_ui(mac, {'status': f"{self.STATUS_MAP['transfer_pe']} [{os.path.basename(filename)}]"})
+        if mac and filename.lower().endswith('.wim'): self._update_ui(mac, {'status': f"{self.STATUS_MAP['transfer_pe']} [{os.path.basename(filename)}]"})
 
     def handle_file_transfer_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
@@ -805,51 +753,9 @@ class ClientManager:
 
     def handle_file_upload_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
-        if not mac: 
-            if self.logger: self.logger(f"收到来自未知IP {client_ip} 的上传，无法更新UI。", "WARNING")
-            return
-
-        update_data = {'status': (f"在线 [{self.mac_to_last_wim[mac]}]" if self.mac_to_last_wim.get(mac) else "在线")}
-
-        tftp_root = self.settings.get('tftp_root', '.') if self.settings else '.'
-        json_path = os.path.join(tftp_root, 'client', f"{client_ip}")
-        
-        if not os.path.exists(json_path):
-            if self.logger: self.logger(f"健康报告文件未找到: {json_path}", "DEBUG")
-            self._update_ui(mac, update_data)
-            return
-
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f: data = json.load(f)
-            
-            physical_disks = [d for d in data.get('Disks', []) if 'Path' in d and 'physicaldrive' in d['Path'].lower()]
-            if not physical_disks:
-                update_data['disk_health'] = "N/A"
-            else:
-                health_statuses = [d.get("Health Status", "Unknown") for d in physical_disks]
-                bad_statuses = [s for s in health_statuses if s.upper() not in ['OK', 'UNKNOWN']]
-                if bad_statuses: update_data['disk_health'] = ', '.join(set(bad_statuses))
-                elif 'Unknown' in health_statuses: update_data['disk_health'] = "Unknown"
-                else: update_data['disk_health'] = "OK"
-
-            adapters = [a for a in data.get('Network', []) if 'loopback' not in a.get('Description', '').lower()]
-            active_ethernet = sorted([a for a in adapters if a.get('Type') == 'Ethernet' and a.get('Status') == 'Active'], key=lambda x: int(x.get('Transmit Link Speed', 0)), reverse=True)
-            target_adapter = active_ethernet[0] if active_ethernet else (adapters[0] if adapters else None)
-            
-            if not target_adapter:
-                update_data['net_speed'] = "N/A"
-            else:
-                speed_bps = int(target_adapter.get('Transmit Link Speed', 0))
-                if speed_bps >= 10**9: update_data['net_speed'] = f"{speed_bps / 10**9:.0f} Gbps"
-                elif speed_bps >= 10**6: update_data['net_speed'] = f"{speed_bps / 10**6:.0f} Mbps"
-                else: update_data['net_speed'] = "N/A"
-            
-            if self.logger: self.logger(f"从 {json_path} 为 {mac} 加载健康信息", "INFO")
-
-        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
-            if self.logger: self.logger(f"处理健康报告 {json_path} 时出错: {e}", "ERROR")
-
-        self._update_ui(mac, update_data)
+        if mac:
+            last_wim = self.mac_to_last_wim.get(mac)
+            self._update_ui(mac, {'status': f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")})
     
     def remove_probe_client(self):
         def _remove_action():
