@@ -1,10 +1,12 @@
+### 文件: client.py (已修复UI显示问题的最终版本)
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading
 import configparser
 import os
 import subprocess
-import shlex
+import shlex 
 import socket
 import time
 import re
@@ -22,6 +24,7 @@ PROBE_MAC = '00-11-22-33-44-55'
 # #################### iPXE 文件管理器 (新功能) #################### #
 # ################################################################# #
 
+# =======================[ 核心修复点 1: 替换为更稳定的滚动框架 ]=======================
 class ScrolledFrame(ttk.Frame):
     """
     一个稳定可靠、带垂直滚动条的 ttk.Frame 容器。
@@ -29,28 +32,46 @@ class ScrolledFrame(ttk.Frame):
     """
     def __init__(self, parent, *args, **kw):
         super().__init__(parent, *args, **kw)
+
+        # 创建一个 canvas 和一个垂直滚动条
         self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        # 将滚动条和 canvas 放置到主 Frame 中
         self.scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
+
+        # 这个内部 Frame 将容纳所有子控件，并且它本身是可以滚动的
         self.viewPort = ttk.Frame(self.canvas)
+        
+        # 将内部 Frame 放入 canvas
         self.canvas_window = self.canvas.create_window((0, 0), window=self.viewPort, anchor="nw")
+
+        # 绑定事件以实现滚动功能
         self.viewPort.bind("<Configure>", self._on_frame_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
+        
+        # 绑定鼠标滚轮事件
         self.bind_all("<MouseWheel>", self._on_mousewheel, add=True)
 
     def _on_frame_configure(self, event):
+        # 当内部 Frame 的大小改变时，更新 canvas 的滚动区域
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_canvas_configure(self, event):
+        # 当 canvas 的大小改变时，调整内部 Frame 的宽度以匹配
         self.canvas.itemconfig(self.canvas_window, width=event.width)
 
     def _on_mousewheel(self, event):
+        # 仅当鼠标悬停在此控件上时才响应滚轮事件
         if self.winfo_containing(event.x_root, event.y_root) is not self:
+             # 如果不是直接在滚动条或画布上，检查是否在子控件上
             widget_under_mouse = self.winfo_containing(event.x_root, event.y_root)
             if not widget_under_mouse or not str(widget_under_mouse).startswith(str(self)):
                 return
+
+        # 跨平台滚轮支持
         if event.delta:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         else:
@@ -58,6 +79,9 @@ class ScrolledFrame(ttk.Frame):
                 self.canvas.yview_scroll(1, "units")
             elif event.num == 4:
                 self.canvas.yview_scroll(-1, "units")
+
+# =======================[ 修复结束 ]=======================
+
 
 class IPXEFileManager(tk.Toplevel):
     """
@@ -69,24 +93,33 @@ class IPXEFileManager(tk.Toplevel):
         self.geometry("900x700")
         self.transient(parent)
         self.grab_set()
+
         self.ipxeboot_vars = {}
         self.init_ipxe_vars = {}
         self.ipxeboot_lines = []
         self.init_ipxe_lines = []
         self.var_pattern = re.compile(r'^\s*set\s+([a-zA-Z0-9_-]+)\s+(.*)')
+
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill="both", expand=True)
         notebook = ttk.Notebook(main_frame)
         notebook.pack(fill="both", expand=True)
+
         if not self._load_data():
             self.destroy()
             return
+
         boot_files_frame = ttk.Frame(notebook, padding=5)
+        # =======================[ 核心修复点 2: 正确创建和添加第二个选项卡 ]=======================
         global_settings_scrolled_frame = ScrolledFrame(notebook)
+        
         notebook.add(boot_files_frame, text="启动项管理 (ipxeboot.txt)")
         notebook.add(global_settings_scrolled_frame, text="全局参数配置 (init.ipxe)")
+
         self._create_boot_files_ui(boot_files_frame)
         self._create_global_settings_ui(global_settings_scrolled_frame.viewPort)
+        # =======================[ 修复结束 ]=======================
+
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill="x", pady=(10, 0))
         ttk.Button(button_frame, text="保存并关闭", command=self._save_and_close).pack(side="right", padx=5)
@@ -112,11 +145,13 @@ class IPXEFileManager(tk.Toplevel):
         except (FileNotFoundError, IOError) as e:
             messagebox.showerror("文件读取错误", f"无法加载配置文件: {e}", parent=self)
             return False
+        
         for line in self.ipxeboot_lines:
             match = self.var_pattern.match(line)
             if match:
                 key, value = match.groups()
                 self.ipxeboot_vars[key] = tk.StringVar(value=value.strip())
+        
         for line in self.init_ipxe_lines:
             match = self.var_pattern.match(line)
             if match:
@@ -128,6 +163,7 @@ class IPXEFileManager(tk.Toplevel):
         """创建用于管理ipxeboot.txt中启动项的UI。"""
         notebook = ttk.Notebook(parent)
         notebook.pack(fill="both", expand=True)
+
         boot_types = {
             "WIM": {'prefix': 'wim', 'keys': list(map(str, range(1, 10))) + ['0'] + list('abcdefg')},
             "ISO": {'prefix': 'iso', 'keys': list(map(str, range(1, 10))) + ['0'] + list('abcdefg')},
@@ -136,16 +172,20 @@ class IPXEFileManager(tk.Toplevel):
             "RAMOS": {'prefix': 'ramos', 'keys': list(map(str, range(1, 10))) + ['0'] + list('abcdefg')},
             "IQN": {'prefix': 'iqn', 'keys': list(map(str, range(1, 10))) + ['0'] + list('abcdefg')},
         }
+
         for type_name, config in boot_types.items():
             scrolled_frame = ScrolledFrame(notebook)
             notebook.add(scrolled_frame, text=type_name)
             container = scrolled_frame.viewPort
+            
             headers = ["#", "文件/资源路径", "显示名称", "任务(Job)", "注入目录", "参数2"]
             for i, header in enumerate(headers):
                 ttk.Label(container, text=header, font=('Helvetica', 9, 'bold')).grid(row=0, column=i, padx=5, pady=5, sticky='w')
+
             row_idx = 1
             for key_suffix in config['keys']:
                 prefix = config['prefix']
+                
                 ttk.Label(container, text=key_suffix.upper()).grid(row=row_idx, column=0, padx=5)
                 self._create_entry_for_var(container, f"{prefix}{key_suffix}", row_idx, 1, 40)
                 self._create_entry_for_var(container, f"{prefix}{key_suffix}name", row_idx, 2, 25)
@@ -158,20 +198,34 @@ class IPXEFileManager(tk.Toplevel):
     def _create_global_settings_ui(self, parent):
         """创建用于管理init.ipxe全局参数的UI。"""
         ttk.Label(parent, text="高级用户设置 (init.ipxe)", font=('Helvetica', 12, 'bold')).grid(row=0, column=0, columnspan=2, pady=10, sticky='w')
+        
         row_idx = 1
         settings_map = [
-            ("iSCSI 服务器地址:", "iscsiurl"), ("主菜单脚本名:", "scriptfile"), ("默认启动类型 (wim/iso...):", "ext-default"),
-            ("WIM 默认启动项 (0-9):", "wimbootfile-default"), ("ISO 默认启动项 (0-9):", "isobootfile-default"),
-            ("IMG 默认启动项 (0-9):", "imgbootfile-default"), ("VHD 默认启动项 (0-9):", "vhdbootfile-default"),
-            ("IQN 默认启动项 (0-9):", "iqnbootfile-default"), ("RAMOS 默认启动项 (0-9):", "ramosbootfile-default"),
-            ("BIOS WIM 启动模式:", "pcbioswimbootmode"), ("UEFI WIM 启动模式:", "efiwimbootmode"),
-            ("BIOS ISO 启动模式:", "pcbiosisobootmode"), ("UEFI ISO 启动模式:", "efiisobootmode"),
-            ("BIOS IMG 启动模式:", "pcbiosimgbootmode"), ("UEFI IMG 启动模式:", "efiimgbootmode"),
-            ("BIOS VHD 启动模式:", "pcbiosvhdbootmode"), ("UEFI VHD 启动模式:", "efivhdbootmode"),
-            ("BIOS IQN 启动模式:", "pcbiosiqnbootmode"), ("UEFI IQN 启动模式:", "efiiqnbootmode"),
-            ("BIOS RAMOS 启动模式:", "pcbiosramosbootmode"), ("UEFI RAMOS 启动模式:", "efiramosbootmode"),
-            ("主菜单超时 (ms):", "ext-timeout"), ("文件选择菜单超时 (ms):", "bootfile-timeout"),
+            ("iSCSI 服务器地址:", "iscsiurl"),
+            ("主菜单脚本名:", "scriptfile"),
+            ("默认启动类型 (wim/iso...):", "ext-default"),
+            ("WIM 默认启动项 (0-9):", "wimbootfile-default"),
+            ("ISO 默认启动项 (0-9):", "isobootfile-default"),
+            ("IMG 默认启动项 (0-9):", "imgbootfile-default"),
+            ("VHD 默认启动项 (0-9):", "vhdbootfile-default"),
+            ("IQN 默认启动项 (0-9):", "iqnbootfile-default"),
+            ("RAMOS 默认启动项 (0-9):", "ramosbootfile-default"),
+            ("BIOS WIM 启动模式:", "pcbioswimbootmode"),
+            ("UEFI WIM 启动模式:", "efiwimbootmode"),
+            ("BIOS ISO 启动模式:", "pcbiosisobootmode"),
+            ("UEFI ISO 启动模式:", "efiisobootmode"),
+            ("BIOS IMG 启动模式:", "pcbiosimgbootmode"),
+            ("UEFI IMG 启动模式:", "efiimgbootmode"),
+            ("BIOS VHD 启动模式:", "pcbiosvhdbootmode"),
+            ("UEFI VHD 启动模式:", "efivhdbootmode"),
+            ("BIOS IQN 启动模式:", "pcbiosiqnbootmode"),
+            ("UEFI IQN 启动模式:", "efiiqnbootmode"),
+            ("BIOS RAMOS 启动模式:", "pcbiosramosbootmode"),
+            ("UEFI RAMOS 启动模式:", "efiramosbootmode"),
+            ("主菜单超时 (ms):", "ext-timeout"),
+            ("文件选择菜单超时 (ms):", "bootfile-timeout"),
         ]
+
         for label_text, var_key in settings_map:
             ttk.Label(parent, text=label_text).grid(row=row_idx, column=0, sticky='w', padx=5, pady=2)
             self._create_entry_for_var(parent, var_key, row_idx, 1, 50, var_dict=self.init_ipxe_vars)
@@ -182,6 +236,7 @@ class IPXEFileManager(tk.Toplevel):
         target_dict = self.ipxeboot_vars if var_dict is None else var_dict
         if key not in target_dict:
             target_dict[key] = tk.StringVar()
+        
         entry = ttk.Entry(parent, textvariable=target_dict[key], width=width)
         entry.grid(row=row, column=col, sticky='ew', padx=5, pady=2)
         return entry
@@ -200,21 +255,27 @@ class IPXEFileManager(tk.Toplevel):
         """核心保存逻辑，替换变量值同时保留文件结构。"""
         new_lines = []
         processed_keys = set()
+
         for line in original_lines:
             match = self.var_pattern.match(line)
             if match:
                 key = match.group(1)
                 if key in data_vars:
                     new_value = data_vars[key].get().strip()
-                    new_lines.append(f"set {key} {new_value}\n" if new_value else f"set {key} \n")
+                    if not new_value:
+                        new_lines.append(f"set {key} \n")
+                    else:
+                        new_lines.append(f"set {key} {new_value}\n")
                     processed_keys.add(key)
                 else:
                     new_lines.append(line)
             else:
                 new_lines.append(line)
+
         for key, var in data_vars.items():
             if key not in processed_keys and var.get().strip():
                 new_lines.append(f"set {key} {var.get().strip()}\n")
+
         with open(path, 'w', encoding='utf-8', newline='\n') as f:
             f.writelines(new_lines)
 
@@ -339,14 +400,15 @@ class ClientManager:
         self.client_counter = 0; self.mac_to_iid = {}; self.ip_to_mac = {}; self.map_lock = threading.Lock()
         self.logger = logger
         self.settings = settings
-        # [名称变更] last_wim -> last_boot_file，更通用
-        self.mac_to_last_boot_file = {}
+        self.mac_to_last_wim = {}
         self.last_checked_index = 0
         self.CLIENTS_TO_CHECK_PER_CYCLE = 5
         self.STATUS_MAP = {
-            'pxe': 'PXE', 'pxemenu': 'PXE菜单', 'menuselect': '确认菜单', 'ipxe': 'iPXE', 'ipxemenu': 'iPXE菜单',
-            'transfer_wim': '传输', 'booting_wim': '启动', 'get_ip': 'Windows 获取IP', 'msft_online': '在线',
-            'online': '在线', 'offline': '离线',
+            'pxe': 'PXE', 'pxemenu': 'PXE菜单', 'ipxe': 'iPXE', 'online': '在线',
+            'transfer_pe': '传输',
+            'booting_pe': '启动',
+            'get_ip': '获取IP', 'msft_online': '在线', 'offline': '离线',
+            'win_get_ip': 'Windows获取IP'
         }
         self.selection_order = []
         self._last_selection_state = set()
@@ -424,55 +486,25 @@ class ClientManager:
                 current_values = self.tree.item(iid, 'values')
                 if not current_values or len(current_values) < 8: continue
                 _, _, name_with_symbol, current_ip, mac, current_status, _, _ = current_values
-            except tk.TclError: 
-                current_scan_index = (current_scan_index + 1) % len(all_iids); continue
-            
+            except tk.TclError: current_scan_index = (current_scan_index + 1) % len(all_iids); continue
+            if "在线" not in current_status and "离线" not in current_status: current_scan_index = (current_scan_index + 1) % len(all_iids); continue
             checked_count += 1
             mac_norm = self._normalize_mac(mac)
-            if mac_norm == PROBE_MAC: 
-                current_scan_index = (current_scan_index + 1) % len(all_iids); continue
-            
-            clean_name = name_with_symbol.lstrip(self.CLIENT_SYMBOL).strip()
+            if mac_norm == PROBE_MAC: current_scan_index = (current_scan_index + 1) % len(all_iids); continue
+            last_wim, clean_name = self.mac_to_last_wim.get(mac_norm, ''), name_with_symbol.lstrip(self.CLIENT_SYMBOL).strip()
             is_online, final_ip = False, current_ip
-            
-            if current_ip and current_ip != '未知': 
-                is_online = self._ping_ip(current_ip)
-            
-            if not is_online and clean_name and clean_name != '未知':
+            if current_ip != '未知': is_online = self._ping_ip(current_ip)
+            elif clean_name and clean_name != '未知':
                 resolved_ip = self._get_ip_from_hostname(clean_name)
-                if resolved_ip and self._ping_ip(resolved_ip):
-                    is_online, final_ip = True, resolved_ip
-
+                if resolved_ip: is_online, final_ip = True, resolved_ip
             update_data = {}
-            
+            online_status_text = f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")
+            offline_status_text = f"{self.STATUS_MAP['offline']}" + (f" [{last_wim}]" if last_wim else "")
             if is_online:
-                # [最终决定版逻辑]: 状态显示完全依赖于是否存在 last_boot_file 记录
-                last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
-                
-                if not last_boot_file:
-                    # 如果没有任何网络启动文件记录，则状态必须是 '本地启动'
-                    online_status_text = "在线[本地启动]"
-                else:
-                    # 如果有网络启动文件记录，则显示该文件名
-                    online_status_text = f"在线 [{last_boot_file}]"
-                
-                # 如果计算出的正确状态与当前显示的状态不同，或IP地址有更新，则准备更新
-                if online_status_text != current_status or final_ip != current_ip:
-                    update_data.update({'status': online_status_text, 'ip': final_ip})
-            else:
-                # 离线逻辑也使用相同的 last_boot_file 判断，以保持显示一致性
-                if "在线" in current_status:
-                    last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
-                    offline_status_text = f"{self.STATUS_MAP['offline']}" + (f" [{last_boot_file}]" if last_boot_file else "")
-                    if offline_status_text != current_status:
-                        update_data['status'] = offline_status_text
-
-            if update_data: 
-                update_data['mac'] = mac_norm
-                updates_to_perform.append(update_data)
-                
+                if online_status_text != current_status or final_ip != current_ip: update_data.update({'status': online_status_text, 'ip': final_ip})
+            elif offline_status_text != current_status: update_data['status'] = offline_status_text
+            if update_data: update_data['mac'] = mac_norm; updates_to_perform.append(update_data)
             current_scan_index = (current_scan_index + 1) % len(all_iids)
-            
         self.last_checked_index = current_scan_index
         if updates_to_perform: self.root.after(0, self._apply_ui_updates, updates_to_perform)
 
@@ -496,7 +528,7 @@ class ClientManager:
     
     def _setup_treeview_columns(self):
         headings = {'#': '序号', 'firmware': '固件', 'name': '计算机名', 'ip': 'IP地址', 'mac': 'MAC地址', 'status': '状态', 'disk_health': '硬盘健康', 'net_speed': '网卡速率'}
-        widths = {'#': 40, 'firmware': 50, 'name': 110, 'ip': 100, 'mac': 120, 'status': 120, 'disk_health': 80, 'net_speed': 80}
+        widths = {'#': 40, 'firmware': 50, 'name': 110, 'ip': 110, 'mac': 120, 'status': 120, 'disk_health': 80, 'net_speed': 80}
         for col, text in headings.items(): self.tree.heading(col, text=text)
         for col, width in widths.items(): self.tree.column(col, width=width, anchor=tk.W if col not in ['#', 'firmware', 'disk_health', 'net_speed'] else tk.CENTER, stretch=col not in ['#', 'firmware'])
 
@@ -509,13 +541,16 @@ class ClientManager:
             tags = ()
             if not is_probe_client and final_status: 
                 tags = ('online_status',) if '在线' in final_status else ('offline_status',) if '离线' in final_status else ('intermediate_status',)
+            
             health = data_to_update.get('disk_health')
             if health:
                 tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
+
             if mac_norm in self.mac_to_iid and self.tree.exists(self.mac_to_iid[mac_norm]):
                 iid = self.mac_to_iid[mac_norm]
                 current_values = list(self.tree.item(iid, 'values'))
-                current_values.extend(['未知'] * (8 - len(current_values)))
+                current_values.extend(['未知'] * (8 - len(current_values))) # 确保列表有8个元素
+                
                 if data_to_update.get('firmware', '未知') != '未知': current_values[1] = data_to_update['firmware']
                 if 'name' in data_to_update: current_values[2] = f"{self.CLIENT_SYMBOL} {data_to_update['name']}".strip()
                 if 'ip' in data_to_update: current_values[3] = data_to_update['ip']
@@ -577,22 +612,13 @@ class ClientManager:
                 seq = int(client_data.get('seq', 0)); max_seq = max(max_seq, seq)
                 status, hostname = client_data.get('status', '未知'), client_data.get('name', '未知')
                 health = client_data.get('disk_health', '未知')
-                ip = client_data.get('ip', '未知')
-
-                # =======================[ 关键修复点 ]=======================
-                # 在加载时，重建IP到MAC的内存映射
-                if ip and ip != '未知':
-                    self.ip_to_mac[ip] = mac_norm
                 
-                # [名称变更] 优先读取新的 last_boot_file 键，并兼容旧的 last_wim 键
-                last_file = client_data.get('last_boot_file', client_data.get('last_wim', ''))
-                self.mac_to_last_boot_file[mac_norm] = last_file
-                # =======================[ 修复结束 ]=======================
-
                 tags = ('online_status',) if '在线' in status else ('offline_status',) if '离线' in status else ('intermediate_status',)
                 tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
-                values = (seq, client_data.get('firmware', '未知'), f"{self.CLIENT_SYMBOL} {hostname}".strip(), ip, mac_norm, status, health, client_data.get('net_speed', '未知'))
+
+                values = (seq, client_data.get('firmware', '未知'), f"{self.CLIENT_SYMBOL} {hostname}".strip(), client_data.get('ip', '未知'), mac_norm, status, health, client_data.get('net_speed', '未知'))
                 iid = self.tree.insert('', 0, values=values, tags=tags); self.mac_to_iid[mac_norm] = iid
+                self.mac_to_last_wim[mac_norm] = client_data.get('last_wim', '')
             self.client_counter = max_seq
         except Exception as e: 
             if self.logger: self.logger(f"加载 {CONFIG_INI_FILENAME} 出错: {e}", "ERROR")
@@ -612,12 +638,16 @@ class ClientManager:
                 if not mac_norm or mac_norm == PROBE_MAC or mac_norm in saved_macs: continue
                 saved_macs.add(mac_norm)
                 clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
-
-                # [名称变更] 使用新的变量和INI键
-                last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
+                last_wim = self.mac_to_last_wim.get(mac_norm, '')
                 config[mac_norm] = {
-                    'seq': str(seq), 'firmware': str(firmware), 'name': clean_name, 'ip': str(ip), 
-                    'status': str(status), 'last_boot_file': last_boot_file, 'disk_health': str(health), 'net_speed': str(speed)
+                    'seq': str(seq), 
+                    'firmware': str(firmware), 
+                    'name': clean_name, 
+                    'ip': str(ip), 
+                    'status': str(status), 
+                    'last_wim': last_wim,
+                    'disk_health': str(health),
+                    'net_speed': str(speed)
                 }
         try:
             with open(CONFIG_INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
@@ -692,17 +722,14 @@ class ClientManager:
             for iid in sel_iids:
                 mac_norm = self._normalize_mac(self.tree.item(iid, 'values')[4])
                 if mac_norm in self.mac_to_iid: del self.mac_to_iid[mac_norm]
-                # [名称变更]
-                if mac_norm in self.mac_to_last_boot_file: del self.mac_to_last_boot_file[mac_norm]
+                if mac_norm in self.mac_to_last_wim: del self.mac_to_last_wim[mac_norm]
                 self.tree.delete(iid)
             self._save_config_to_ini()
 
     def _clear_all_clients(self):
         if not self.tree.get_children(): return
         if messagebox.askyesno("确认清空", "警告：这将从列表和配置文件中永久删除所有客户机记录！\n菜单配置将保留。\n\n您确定要继续吗?", icon='warning', parent=self.root):
-            self.mac_to_iid.clear()
-            # [名称变更]
-            self.mac_to_last_boot_file.clear()
+            self.mac_to_iid.clear(); self.mac_to_last_wim.clear()
             for iid in self.tree.get_children(''): self.tree.delete(iid)
             self.client_counter = 0; self._save_config_to_ini()
     
@@ -733,19 +760,32 @@ class ClientManager:
     def handle_dhcp_request(self, mac, ip, state_hint, firmware_type=None, hostname=None):
         mac_norm = self._normalize_mac(mac)
         if not mac_norm: return
+        
         with self.map_lock:
-            if ip and ip != '0.0.0.0': self.ip_to_mac[ip] = mac_norm
+            if ip and ip != '0.0.0.0':
+                self.ip_to_mac[ip] = mac_norm
+
         status = self.STATUS_MAP.get(state_hint, state_hint)
         if state_hint == 'msft_online':
-            last_boot_file = self.mac_to_last_boot_file.get(mac_norm)
-            status = f"{self.STATUS_MAP['online']}" + (f" [{last_boot_file}]" if last_boot_file else "")
+            last_wim = self.mac_to_last_wim.get(mac_norm)
+            status = f"{self.STATUS_MAP['online']}" + (f" [{last_wim}]" if last_wim else "")
+        
         update_data = {'status': status}
-        if ip and ip != '0.0.0.0': update_data['ip'] = ip
+        if ip and ip != '0.0.0.0':
+            update_data['ip'] = ip
         elif hostname:
             resolved_ip = self._get_ip_from_hostname(hostname)
-            if resolved_ip: update_data['ip'] = resolved_ip; self.ip_to_mac[resolved_ip] = mac_norm
-        if hostname: update_data['name'] = hostname
-        if firmware_type and state_hint != 'get_ip': update_data['firmware'] = firmware_type
+            if resolved_ip:
+                update_data['ip'] = resolved_ip
+                with self.map_lock:
+                    self.ip_to_mac[resolved_ip] = mac_norm
+
+        if hostname:
+            update_data['name'] = hostname
+        
+        if firmware_type and state_hint != 'get_ip':
+            update_data['firmware'] = firmware_type
+            
         self._update_ui(mac_norm, update_data)
 
     def _get_mac_from_ip(self, ip):
@@ -753,77 +793,35 @@ class ClientManager:
 
     def handle_file_transfer_start(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
-        if mac:
-            self._update_ui(mac, {'status': f"{self.STATUS_MAP['transfer_wim']}({os.path.basename(filename)})"})
+        if mac and filename.lower().endswith('.wim'):
+            self._update_ui(mac, {'status': f"{self.STATUS_MAP['transfer_pe']} [{os.path.basename(filename)}]"})
 
     def handle_file_transfer_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
-        basename = os.path.basename(filename)
-        
-        # [核心微调]: 定义只应被记录并显示在状态栏的启动镜像文件类型
-        # .efi 已被移除，新增了 .ramos 和 .install
-        BOOT_IMAGE_EXTENSIONS = {'.wim', '.iso', '.vhd', '.img', '.ima', '.ramos', '.install'}
-        
-        # 移除文件名中的已知后缀，以获取干净的文件名（例如 'install' 来自 'install.wim'）
-        clean_basename, _ = os.path.splitext(basename)
-
-        # 检查文件的实际扩展名
-        _, file_ext = os.path.splitext(filename.lower())
-
-        if mac and file_ext in BOOT_IMAGE_EXTENSIONS:
-            # 如果传输完成的是指定的启动镜像类型之一，就记录其文件名
-            # 如果文件名是 'install'，则使用其父目录名作为标识
-            if clean_basename.lower() == 'install':
-                # 获取文件的父目录名，例如 C:\TFTP\Boot\wim\win10\install.wim -> win10
-                parent_dir_name = os.path.basename(os.path.dirname(filename))
-                display_name = parent_dir_name if parent_dir_name else basename
-                self.mac_to_last_boot_file[mac] = display_name
-                self._update_ui(mac, {'status': f"启动({display_name})"})
-            else:
-                self.mac_to_last_boot_file[mac] = basename
-                self._update_ui(mac, {'status': f"启动({basename})"})
-
-        elif mac:
-            # 如果传输的是其他文件（如 .efi），则不记录它为“最后启动文件”，
-            # 这样心跳检测就会将其正确地判断为“本地启动”或保持之前的状态。
-            # 我们仍然可以短暂显示一个通用的“启动”状态。
-            self._update_ui(mac, {'status': f"启动({basename})"})
-        mac = self._get_mac_from_ip(client_ip)
-        basename = os.path.basename(filename)
-        
-        # [核心修改] 定义可被记录为网络启动的通用文件类型
-        BOOT_EXTENSIONS = {'.wim', '.iso', '.vhd', '.img', '.ima', '.efi'}
-        
-        # 只要传输完成的是这些类型之一，就记录下来
-        if mac and any(filename.lower().endswith(ext) for ext in BOOT_EXTENSIONS):
-            self.mac_to_last_boot_file[mac] = basename
-            # 更新状态为“正在启动”，并带上正确的文件名
-            self._update_ui(mac, {'status': f"启动({basename})"})
-        elif mac:
-            # 如果传输的不是启动文件（例如上传健康报告），则不改变启动记录，
-            # 仅将状态简单更新为启动中，后续由心跳线程修正为最终状态
-            self._update_ui(mac, {'status': f"{self.STATUS_MAP['booting_wim']}({basename})"})
+        if mac and filename.lower().endswith('.wim'):
+            basename = os.path.basename(filename)
+            self.mac_to_last_wim[mac] = basename
+            self._update_ui(mac, {'status': f"{self.STATUS_MAP['booting_pe']} [{basename}]"})
 
     def handle_file_upload_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
         if not mac: 
             if self.logger: self.logger(f"收到来自未知IP {client_ip} 的上传，无法更新UI。", "WARNING")
             return
-        update_data = {}
-        last_boot_file = self.mac_to_last_boot_file.get(mac)
-        if last_boot_file:
-            update_data['status'] = f"在线 [{last_boot_file}]"
-        else:
-            update_data['status'] = "在线[本地启动]"
-            
+
+        update_data = {'status': (f"在线 [{self.mac_to_last_wim[mac]}]" if self.mac_to_last_wim.get(mac) else "在线")}
+
         tftp_root = self.settings.get('tftp_root', '.') if self.settings else '.'
         json_path = os.path.join(tftp_root, 'client', f"{client_ip}")
+        
         if not os.path.exists(json_path):
             if self.logger: self.logger(f"健康报告文件未找到: {json_path}", "DEBUG")
             self._update_ui(mac, update_data)
             return
+
         try:
             with open(json_path, 'r', encoding='utf-8') as f: data = json.load(f)
+            
             physical_disks = [d for d in data.get('Disks', []) if 'Path' in d and 'physicaldrive' in d['Path'].lower()]
             if not physical_disks:
                 update_data['disk_health'] = "N/A"
@@ -833,9 +831,11 @@ class ClientManager:
                 if bad_statuses: update_data['disk_health'] = ', '.join(set(bad_statuses))
                 elif 'Unknown' in health_statuses: update_data['disk_health'] = "Unknown"
                 else: update_data['disk_health'] = "OK"
+
             adapters = [a for a in data.get('Network', []) if 'loopback' not in a.get('Description', '').lower()]
             active_ethernet = sorted([a for a in adapters if a.get('Type') == 'Ethernet' and a.get('Status') == 'Active'], key=lambda x: int(x.get('Transmit Link Speed', 0)), reverse=True)
             target_adapter = active_ethernet[0] if active_ethernet else (adapters[0] if adapters else None)
+            
             if not target_adapter:
                 update_data['net_speed'] = "N/A"
             else:
@@ -843,9 +843,12 @@ class ClientManager:
                 if speed_bps >= 10**9: update_data['net_speed'] = f"{speed_bps / 10**9:.0f} Gbps"
                 elif speed_bps >= 10**6: update_data['net_speed'] = f"{speed_bps / 10**6:.0f} Mbps"
                 else: update_data['net_speed'] = "N/A"
+            
             if self.logger: self.logger(f"从 {json_path} 为 {mac} 加载健康信息", "INFO")
+
         except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
             if self.logger: self.logger(f"处理健康报告 {json_path} 时出错: {e}", "ERROR")
+
         self._update_ui(mac, update_data)
     
     def remove_probe_client(self):
@@ -866,8 +869,8 @@ class ClientManager:
             offline_text = self.STATUS_MAP.get('offline', '离线')
             for section in config.sections():
                 if not section.startswith('Menu_'):
-                    last_boot_file = config.get(section, 'last_boot_file', fallback=config.get(section, 'last_wim', fallback=''))
-                    final_status = f"{offline_text} [{last_boot_file}]" if last_boot_file else offline_text
+                    last_wim = config.get(section, 'last_wim', fallback='')
+                    final_status = f"{offline_text} [{last_wim}]" if last_wim else offline_text
                     config.set(section, 'status', final_status)
             with open(CONFIG_INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
         except Exception as e:

@@ -32,20 +32,9 @@ from client import ClientManager
 
 log_queue = queue.Queue()
 LOG_FILENAME = 'nbpxe.log'
-# 文件: NBPxeServer.py
-
-# ...
 ip_to_mac_map = {}
 ip_map_lock = threading.Lock()
-
-# =======================[ 新增：失败日志聚合器 ]=======================
-failure_aggregator = {}
-aggregator_lock = threading.Lock()
-stop_aggregator_event = threading.Event()
-# =======================[ 修改结束 ]=======================
-
 client_manager = None
-# ...
 
 def log_message(message, level='INFO'):
     log_levels = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3}
@@ -64,7 +53,7 @@ def log_message(message, level='INFO'):
         log_queue.put((message, level))
 
 INI_FILENAME = 'NBpxe.ini'
-config = configparser.ConfigParser(interpolation=None) # <--- 修改后的行
+config = configparser.ConfigParser(interpolation=None)
 SETTINGS = {}
 ARCH_TYPES = {0: 'bios', 6: 'uefi32', 7: 'uefi64', 9: 'uefi64'}
 
@@ -79,15 +68,11 @@ def get_mac_address():
 def get_all_ips():
     ips = ['127.0.0.1']
     try:
-        # 使用您最初文件中的方法来获取所有IP地址
         _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
         ips.extend(ip_list)
     except socket.gaierror:
-        # 保持纯本地，不进行任何网络连接尝试
         pass
 
-    # 定义一个已知虚拟网卡/特殊用途IP地址前缀的“黑名单”
-    # VMWare, VirtualBox, Hyper-V, WSL, Docker等常用网段
     VIRTUAL_NET_PREFIXES = [
         '192.168.56.', '192.168.64.', '192.168.80.', '192.168.88.', 
         '192.168.122.', '192.168.233.', '192.168.48.', '192.168.177.',
@@ -97,111 +82,27 @@ def get_all_ips():
     ]
 
     def sort_key(ip):
-        """
-        排序函数，严格按照您的要求：
-        1. 虚拟网卡和特殊地址优先级最低。
-        2. 然后按标准私有网段排序。
-        """
-        # 优先级 1: 检查是否为特殊地址或在“黑名单”中
         if ip in ['127.0.0.1']:
-            return 100 # 最低优先级
-        
+            return 100
         for prefix in VIRTUAL_NET_PREFIXES:
             if ip.startswith(prefix):
-                return 50 # 虚拟网卡，次低优先级
-
-        # 优先级 2: 标准私有网段排序 (物理网卡)
+                return 50
         if ip.startswith('192.168.'):
-            return 0 # 最高优先级
+            return 0
         elif ip.startswith('172.'):
             try:
                 if 16 <= int(ip.split('.')[1]) <= 31:
-                    return 1 # 次高优先级
+                    return 1
             except (ValueError, IndexError):
                 pass
         elif ip.startswith('10.'):
-            return 2 # 普通优先级
-        
-        # 其他所有IP（如公网IP）优先级较低
+            return 2
         return 90
 
-    # 使用排序键对去重后的IP列表进行排序，并为GUI添加 '0.0.0.0' 选项
-    # 0.0.0.0 (所有网卡) 作为一个特殊选项，手动添加到列表最前面
     sorted_ips = sorted(list(set(ips)), key=sort_key)
     if '0.0.0.0' not in sorted_ips:
-        sorted_ips.append('0.0.0.0') # 确保它存在，但排序后会在后面
+        sorted_ips.append('0.0.0.0')
         
-    return sorted(list(set(ips)), key=sort_key)
-    ips = ['127.0.0.1', '0.0.0.0'] # 0.0.0.0 仅用于GUI显示，需要被排到后面
-    try:
-        _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
-        ips.extend(ip_list)
-    except socket.gaierror:
-        pass
-
-    # 已知的虚拟网卡/特殊用途IP地址前缀列表
-    # VMWare, VirtualBox, Hyper-V, WSL, Docker等常用网段
-    VIRTUAL_NET_PREFIXES = [
-        '192.168.56.', '192.168.64.', '192.168.80.', '192.168.88.', 
-        '192.168.122.', '192.168.233.',
-        '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.',
-        '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.',
-        '172.29.', '172.30.', '172.31.'
-    ]
-
-    def sort_key(ip):
-        """
-        排序函数，严格按照您的要求：
-        1. 虚拟网卡和特殊地址优先级最低。
-        2. 然后按标准私有网段排序。
-        """
-        # 优先级 1: 检查是否为特殊地址或已知虚拟网卡
-        if ip in ['0.0.0.0', '127.0.0.1']:
-            return 100 # 最低优先级
-        
-        for prefix in VIRTUAL_NET_PREFIXES:
-            if ip.startswith(prefix):
-                return 50 # 虚拟网卡，次低优先级
-
-        # 优先级 2: 标准私有网段排序
-        if ip.startswith('192.168.'):
-            return 0 # 最高优先级
-        elif ip.startswith('172.'):
-            try:
-                # 确保是 172.16.0.0 - 172.31.255.255 范围
-                if 16 <= int(ip.split('.')[1]) <= 31:
-                    return 1 # 次高优先级
-            except (ValueError, IndexError):
-                pass
-        elif ip.startswith('10.'):
-            return 2 # 普通优先级
-        
-        # 其他所有IP（如公网IP）优先级较低
-        return 90
-
-    # 使用新的排序键对去重后的IP列表进行排序
-    return sorted(list(set(ips)), key=sort_key)
-    ips = ['127.0.0.1']
-    try:
-        _, _, ip_list = socket.gethostbyname_ex(socket.gethostname())
-        ips.extend(ip_list)
-    except socket.gaierror:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.settimeout(0.1)
-                s.connect(("8.8.8.8", 80))
-                ips.append(s.getsockname()[0])
-        except Exception:
-            pass
-    def sort_key(ip):
-        if ip.startswith('192.168.'): return 0
-        if ip.startswith('172.'):
-            try:
-                if 16 <= int(ip.split('.')[1]) <= 31: return 1
-            except (ValueError, IndexError): pass
-        if ip.startswith('10.'): return 2
-        if ip == '127.0.0.1': return 100
-        return 3
     return sorted(list(set(ips)), key=sort_key)
 
 def create_default_ini():
@@ -390,10 +291,7 @@ def build_pxe_option43_menu(menu_cfg, tftp_server_ip):
         menu_val += item['type_bytes'] + bytes([len(desc)]) + desc
     payload += bytes([9, len(menu_val)]) + menu_val
     max_timeout = menu_cfg.get('timeout', 10)
-    if menu_cfg.get('randomize_timeout', False):
-        timeout = random.randint(0, max_timeout)
-    else:
-        timeout = max_timeout
+    timeout = random.randint(0, max_timeout) if menu_cfg.get('randomize_timeout', False) else max_timeout
     timeout = max(0, min(255, timeout))
     prompt = menu_cfg.get('prompt', '').encode('ascii', 'ignore') + b'\x00'
     prompt_val = bytes([timeout]) + prompt
@@ -401,7 +299,7 @@ def build_pxe_option43_menu(menu_cfg, tftp_server_ip):
     payload += b'\xff'
     return bytes(payload)
 
-# =======================[ 核心修改点: craft_dhcp_response ]=======================
+# =======================[ 请完整替换此函数 ]=======================
 def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False):
     if len(req_pkt) < 240: return None
     try:
@@ -413,24 +311,15 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         log_message(f"DHCP: 解析请求包失败: {e}", "ERROR"); return None
 
     user_class = opts.get(77, b'')
-    vendor_class_bytes = opts.get(60, b'')
-    vendor_class = vendor_class_bytes.decode(errors='ignore')
-    is_ipxe_client = b'iPXE' in user_class or b'iPXE' in vendor_class_bytes
+    vendor_class = opts.get(60, b'')
+    is_ipxe_client = b'iPXE' in user_class or b'iPXE' in vendor_class
     
-    # --- 新增日志记录 ---
-    if vendor_class:
-        log_message(f"DHCP: 客户端 {client_mac} Vendor Class Identifier = '{vendor_class}'")
-
-    # --- 修改: 处理 Windows PE/Setup 客户端 ---
-    if 'MSFT 5.0' in vendor_class:
-        # --- 新增日志记录 ---
-        log_message(f"DHCP: 客户端 {client_mac} (Windows 获取IP) 请求地址。")
+    vendor_class_str = vendor_class.decode(errors='ignore')
+    if 'MSFT 5.0' in vendor_class_str:
         hostname = opts.get(12, b'').decode(errors='ignore').strip()
         if client_manager:
-            # --- 修改 state_hint ---
             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'get_ip', hostname=hostname)
         
-        # (构建Windows响应包的逻辑保持不变)
         resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
         if resp_msg_type == 0: return None
         resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
@@ -441,22 +330,160 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
             resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
             resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
             resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
-            resp_pkt += bytes([51, 4]) + cfg['lease_time'].to_bytes(4, 'big')
+            # --- 修复点 1 ---
+            resp_pkt += bytes([51, 4]) + int(cfg['lease_time']).to_bytes(4, 'big')
         if cfg.get('dhcp_options_enabled', False):
             custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(cfg.get('dhcp_options_text', ''))
             if custom_options_bytes: resp_pkt += custom_options_bytes
         resp_pkt += b'\xff'
         return bytes(resp_pkt)
 
-    # --- PXE 和 iPXE 客户端处理逻辑 ---
     arch_name = 'bios'
     if 93 in opts and len(opts[93]) >= 2:
         arch_code = struct.unpack('!H', opts[93][:2])[0]
         arch_name = ARCH_TYPES.get(arch_code, 'bios')
     
-    # --- 修改: 初始状态更新 ---
+    firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
+    
     if client_manager:
-        firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
+        initial_state = 'ipxe' if is_ipxe_client else 'pxe'
+        client_manager.handle_dhcp_request(client_mac, assigned_ip, initial_state, firmware_type=firmware_display)
+    
+    menu_cfg_key_prefix = 'pxe_menu_ipxe' if is_ipxe_client else ('pxe_menu_uefi' if 'uefi' in arch_name else 'pxe_menu_bios')
+    has_hostname = 12 in opts
+    menu_enabled = cfg.get(f'{menu_cfg_key_prefix}_enabled', False)
+    final_server_ip = cfg['server_ip']
+    boot_file = ""
+    option43 = b''
+    is_menu_offer = False
+
+    resp_msg_type = 5 if is_proxy_req else (2 if msg_type == 1 else (5 if msg_type == 3 else 0))
+    if resp_msg_type == 0: return None
+
+    selected_item_type = None
+    if 43 in opts:
+        pxe_opts = opts[43]
+        i = 0
+        while i < len(pxe_opts) - 1:
+            sub_code, sub_len = pxe_opts[i], pxe_opts[i+1]
+            if sub_code == 255: break
+            if sub_code == 71 and sub_len >= 4:
+                selected_item_type = struct.unpack('!H', pxe_opts[i+2:i+4])[0]
+                break
+            i += 2 + sub_len
+
+    if selected_item_type is not None:
+        menu_items_str = cfg.get(f'{menu_cfg_key_prefix}_items', '')
+        for line in menu_items_str.strip().splitlines():
+            parts = [p.strip() for p in line.strip().split(',', 3) if p]
+            if len(parts) == 4:
+                try:
+                    if int(parts[2], 16) == selected_item_type:
+                        boot_file = parts[1]
+                        server_ip_str = parts[3]
+                        if '%tftpserver%' in server_ip_str.lower(): final_server_ip = cfg['server_ip']
+                        elif server_ip_str and server_ip_str != '0.0.0.0': final_server_ip = server_ip_str
+                        else: final_server_ip = cfg['server_ip']
+                        break
+                except ValueError: continue
+        option43 = bytes([71, 4]) + selected_item_type.to_bytes(2, 'big') + (0).to_bytes(2, 'big') + b'\xff'
+    
+    elif menu_enabled and (not has_hostname or menu_cfg_key_prefix in ['pxe_menu_bios', 'pxe_menu_uefi']):
+        is_menu_offer = True
+        menu_config = {
+            'enabled': True, 'timeout': cfg.get(f'{menu_cfg_key_prefix}_timeout', 10),
+            'randomize_timeout': cfg.get(f'{menu_cfg_key_prefix}_randomize_timeout', False),
+            'prompt': cfg.get(f'{menu_cfg_key_prefix}_prompt', 'Boot Menu'),
+            'items': cfg.get(f'{menu_cfg_key_prefix}_items', '')
+        }
+        option43 = build_pxe_option43_menu(menu_config, cfg['server_ip'])
+        if client_manager: client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
+    else:
+        boot_file = cfg.get('bootfile_ipxe', '') if is_ipxe_client else cfg.get(f"bootfile_{arch_name}", cfg['bootfile_bios'])
+        if boot_file and not is_ipxe_client:
+            option43 = b'\x06\x01\x08\xff'
+    
+    resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
+    resp_pkt += req_pkt[12:16] + socket.inet_aton(assigned_ip)
+    final_server_ip_bytes = socket.inet_aton(final_server_ip)
+    siaddr = b'\x00\x00\x00\x00' if is_menu_offer else final_server_ip_bytes
+    file_bytes = boot_file.encode('ascii', 'ignore')
+    resp_pkt += siaddr + req_pkt[24:28] + chaddr + (b'\x00' * 64)
+    resp_pkt += file_bytes + b'\x00' * (128 - len(file_bytes))
+    resp_pkt += b'\x63\x82\x53\x63'
+
+    resp_pkt += bytes([53, 1, resp_msg_type])
+    resp_pkt += bytes([54, 4]) + socket.inet_aton(cfg['server_ip'])
+    resp_pkt += bytes([60, 9]) + b'PXEClient'
+    if 97 in opts: resp_pkt += bytes([97, len(opts[97])]) + opts[97]
+    if option43: resp_pkt += bytes([43, len(option43)]) + option43
+    
+    if not is_menu_offer and boot_file:
+        server_ip_str_bytes = final_server_ip.encode('ascii')
+        resp_pkt += bytes([66, len(server_ip_str_bytes)]) + server_ip_str_bytes
+        resp_pkt += bytes([67, len(file_bytes) + 1]) + file_bytes + b'\x00'
+    
+    if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
+        resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
+        resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
+        resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
+        # --- 修复点 2 ---
+        resp_pkt += bytes([51, 4]) + int(cfg['lease_time']).to_bytes(4, 'big')
+
+    if cfg.get('dhcp_options_enabled', False):
+        custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(cfg.get('dhcp_options_text', ''))
+        if custom_options_bytes: resp_pkt += custom_options_bytes
+    
+    resp_pkt += b'\xff'
+    return bytes(resp_pkt)
+# =======================[ 替换结束 ]=======================
+    if len(req_pkt) < 240: return None
+    try:
+        xid, chaddr = req_pkt[4:8], req_pkt[28:44]
+        client_mac = ":".join(f"{b:02x}" for b in chaddr[:6])
+        opts = parse_dhcp_options(req_pkt)
+        msg_type = opts.get(53, b'\x00')[0]
+    except Exception as e:
+        log_message(f"DHCP: 解析请求包失败: {e}", "ERROR"); return None
+
+    user_class = opts.get(77, b'')
+    vendor_class = opts.get(60, b'')
+    is_ipxe_client = b'iPXE' in user_class or b'iPXE' in vendor_class
+    
+    vendor_class_str = vendor_class.decode(errors='ignore')
+    if 'MSFT 5.0' in vendor_class_str:
+        hostname = opts.get(12, b'').decode(errors='ignore').strip()
+        if client_manager:
+            client_manager.handle_dhcp_request(client_mac, assigned_ip, 'get_ip', hostname=hostname)
+        
+        resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
+        if resp_msg_type == 0: return None
+        resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
+        resp_pkt += req_pkt[12:16] + socket.inet_aton(assigned_ip) + b'\x00\x00\x00\x00'
+        resp_pkt += req_pkt[24:28] + chaddr + (b'\x00' * (64 + 128)) + b'\x63\x82\x53\x63'
+        resp_pkt += bytes([53, 1, resp_msg_type]) + bytes([54, 4]) + socket.inet_aton(cfg['server_ip'])
+       # =======================[ 请修改为这样 ]=======================
+    if cfg['dhcp_mode'] == 'dhcp' and not is_proxy_req:
+        resp_pkt += bytes([1, 4]) + socket.inet_aton(cfg['subnet_mask'])
+        resp_pkt += bytes([3, 4]) + socket.inet_aton(cfg['router_ip'])
+        resp_pkt += bytes([6, 4]) + socket.inet_aton(cfg['dns_server_ip'])
+        # 在调用 .to_bytes() 前，使用 int() 进行强制类型转换
+        resp_pkt += bytes([51, 4]) + int(cfg['lease_time']).to_bytes(4, 'big')
+# =======================[ 修改后的代码 ]=======================
+        if cfg.get('dhcp_options_enabled', False):
+            custom_options_bytes = dhcp_option_handler.parse_and_build_dhcp_options(cfg.get('dhcp_options_text', ''))
+            if custom_options_bytes: resp_pkt += custom_options_bytes
+        resp_pkt += b'\xff'
+        return bytes(resp_pkt)
+
+    arch_name = 'bios'
+    if 93 in opts and len(opts[93]) >= 2:
+        arch_code = struct.unpack('!H', opts[93][:2])[0]
+        arch_name = ARCH_TYPES.get(arch_code, 'bios')
+    
+    firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
+    
+    if client_manager:
         initial_state = 'ipxe' if is_ipxe_client else 'pxe'
         client_manager.handle_dhcp_request(client_mac, assigned_ip, initial_state, firmware_type=firmware_display)
     
@@ -488,9 +515,6 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
             i += 2 + sub_len
 
     if selected_item_type is not None:
-        # --- 修改: 菜单已选择状态 ---
-        if client_manager: client_manager.handle_dhcp_request(client_mac, assigned_ip, 'menuselect')
-        
         menu_items_str = cfg.get(f'{menu_cfg_key_prefix}_items', '')
         for line in menu_items_str.strip().splitlines():
             parts = [p.strip() for p in line.strip().split(',', 3) if p]
@@ -499,12 +523,9 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                     if int(parts[2], 16) == selected_item_type:
                         boot_file = parts[1]
                         server_ip_str = parts[3]
-                        if '%tftpserver%' in server_ip_str.lower():
-                            final_server_ip = cfg['server_ip']
-                        elif server_ip_str and server_ip_str != '0.0.0.0':
-                            final_server_ip = server_ip_str
-                        else:
-                            final_server_ip = cfg['server_ip']
+                        if '%tftpserver%' in server_ip_str.lower(): final_server_ip = cfg['server_ip']
+                        elif server_ip_str and server_ip_str != '0.0.0.0': final_server_ip = server_ip_str
+                        else: final_server_ip = cfg['server_ip']
                         break
                 except ValueError: continue
         log_message(f"DHCP: 客户端 {client_mac} 已选择菜单项 {selected_item_type:04x}, 提供文件: '{boot_file or '本地启动'}'")
@@ -520,14 +541,9 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         }
         option43 = build_pxe_option43_menu(menu_config, cfg['server_ip'])
         log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供 '{menu_cfg_key_prefix}' 菜单")
-        
-        # --- 修改: 提供菜单状态 ---
-        if client_manager:
-            menu_state = 'ipxemenu' if is_ipxe_client else 'pxemenu'
-            client_manager.handle_dhcp_request(client_mac, assigned_ip, menu_state)
+        if client_manager: client_manager.handle_dhcp_request(client_mac, assigned_ip, 'pxemenu')
 
     else:
-        # (默认文件逻辑，初始状态已在前面设置，无需再次更新)
         if is_ipxe_client:
             boot_file = cfg.get('bootfile_ipxe', '')
         else:
@@ -536,7 +552,6 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                 option43 = b'\x06\x01\x08\xff'
         log_message(f"DHCP: 为 {client_mac} 提供默认文件: '{boot_file}'")
     
-    # (构建响应包的剩余部分保持不变)
     resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
     resp_pkt += req_pkt[12:16] + socket.inet_aton(assigned_ip)
     final_server_ip_bytes = socket.inet_aton(final_server_ip)
@@ -569,7 +584,6 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     
     resp_pkt += b'\xff'
     return bytes(resp_pkt)
-# =======================[ 修改结束 ]=======================
 
 dhcp_thread, proxy_thread, tftp_thread, http_thread, dhcp_detector_thread = None, None, None, None, None
 stop_event = threading.Event()
@@ -579,65 +593,40 @@ def detect_other_dhcp_servers(stop_evt):
     listen_ip = SETTINGS.get('listen_ip', '0.0.0.0')
     server_ip = SETTINGS.get('server_ip')
     bind_ip = listen_ip if listen_ip != '0.0.0.0' else ''
-    discover_pkt = bytearray(b'\x01\x01\x06\x00')
-    discover_pkt += os.urandom(4)
-    discover_pkt += b'\x00\x00\x80\x00'
-    discover_pkt += b'\x00' * 16
-    discover_pkt += b'\x00\x11\x22\x33\x44\x55' + b'\x00'*10
-    discover_pkt += b'\x00' * 192
-    discover_pkt += b'\x63\x82\x53\x63'
-    discover_pkt += b'\x35\x01\x01'
-    discover_pkt += b'\x37\x05\x01\x03\x06\x0c\x0f'
-    discover_pkt += b'\x0c\x08NBPXE-Scan'
-    discover_pkt += b'\xff'
+    discover_pkt = bytearray(b'\x01\x01\x06\x00') + os.urandom(4) + b'\x00\x00\x80\x00' + b'\x00' * 16
+    discover_pkt += b'\x00\x11\x22\x33\x44\x55' + b'\x00'*10 + b'\x00' * 192 + b'\x63\x82\x53\x63'
+    discover_pkt += b'\x35\x01\x01\x37\x05\x01\x03\x06\x0c\x0f\x0c\x08NBPXE-Scan\xff'
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     try:
         sock.bind((bind_ip, 68))
     except Exception as e:
-        log_message(f"DHCP探测器: 无法绑定到端口68进行检测: {e}", "ERROR")
-        sock.close()
-        return
-    start_time = time.time()
-    found_server = False
+        log_message(f"DHCP探测器: 无法绑定到端口68进行检测: {e}", "ERROR"); sock.close(); return
+    start_time, found_server = time.time(), False
     try:
         while not stop_evt.is_set() and time.time() - start_time < 15 and not found_server:
-            log_message("DHCP探测器: 正在发送DHCPDISCOVER广播包...")
             sock.sendto(discover_pkt, ('255.255.255.255', 67))
-            listen_start_time = time.time()
-            detected_servers = set()
-            while time.time() - listen_start_time < 3:
+            listen_start, detected_servers = time.time(), set()
+            while time.time() - listen_start < 3:
                 if stop_evt.is_set(): break
                 try:
                     sock.settimeout(1.0)
                     data, _ = sock.recvfrom(1024)
-                    if len(data) > 240:
-                        opts = parse_dhcp_options(data)
-                        if opts.get(53) == b'\x02':
-                            server_id_bytes = opts.get(54)
-                            if server_id_bytes:
-                                server_id = socket.inet_ntoa(server_id_bytes)
-                                if server_id != server_ip and server_id != listen_ip:
-                                    detected_servers.add(server_id)
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    log_message(f"DHCP探测器: 接收探测响应时出错: {e}", "ERROR")
+                    if len(data) > 240 and parse_dhcp_options(data).get(53) == b'\x02':
+                        server_id = socket.inet_ntoa(parse_dhcp_options(data).get(54))
+                        if server_id not in [server_ip, listen_ip]: detected_servers.add(server_id)
+                except socket.timeout: continue
             if detected_servers:
-                for srv_ip in detected_servers:
-                    log_message(f"警告: 在局域网中发现另一个DHCP服务器, 地址为 {srv_ip}！", "WARNING")
-                log_message("建议: 为避免IP地址冲突, 请在本软件中使用“代理(Proxy)”模式, 或停用网络中的其它DHCP服务器。", "WARNING")
-                found_server = True
-            if not found_server and not stop_evt.is_set():
-                time.sleep(2)
+                for srv_ip in detected_servers: log_message(f"警告: 发现其它DHCP服务器 {srv_ip}！", "WARNING")
+                log_message("建议: 使用“代理(Proxy)”模式或停用其它DHCP服务器以避免冲突。", "WARNING"); found_server = True
+            if not found_server and not stop_evt.is_set(): time.sleep(2)
     finally:
-        if not found_server and not stop_evt.is_set():
-            log_message("DHCP探测器: 扫描结束, 未发现其它DHCP服务器。")
+        if not found_server and not stop_evt.is_set(): log_message("DHCP探测器: 扫描结束, 未发现其它DHCP服务器。")
         sock.close()
-        if client_manager:
-            client_manager.remove_probe_client()
+        if client_manager: client_manager.remove_probe_client()
 
+# =======================[ 请完整替换此函数 ]=======================
 def run_dhcp_server(cfg, stop_evt):
     mac_to_ip, offered_ips = {}, {}
     ip_pool = deque()
@@ -675,7 +664,6 @@ def run_dhcp_server(cfg, stop_evt):
             mac = ":".join(f"{b:02x}" for b in data[28:34])
             client_ip_from_packet = socket.inet_ntoa(data[12:16])
             
-            # 保留新版本中有用的逻辑：记录已存在IP的客户端
             if client_ip_from_packet != '0.0.0.0':
                 with ip_map_lock:
                     ip_to_mac_map[client_ip_from_packet] = mac
@@ -688,17 +676,17 @@ def run_dhcp_server(cfg, stop_evt):
                 if msg_type == 1: # DHCPDISCOVER
                     ip_to_assign = get_lease(mac)
                 elif msg_type == 3: # DHCPREQUEST
-                    # =======================[ 这是关键的修复点 ]=======================
-                    # 始终优先使用Option 50，如果不存在则为None，而不是回退到可能为'0.0.0.0'的ciaddr
-                    req_ip = socket.inet_ntoa(opts[50]) if 50 in opts else None
-                    if req_ip: # 只要从Option 50中成功获取IP，就继续处理
+                    req_ip = socket.inet_ntoa(opts[50]) if 50 in opts else client_ip_from_packet
+                    if req_ip and req_ip != '0.0.0.0': 
                         ip_to_assign = confirm_lease(mac, req_ip)
-                    # =======================[ 修复结束 ]=======================
                 
-                if not ip_to_assign: 
+                # --- 关键修复点 ---
+                # 如果经过上述逻辑后，没有分配到有效的IP地址 (ip_to_assign 为 None)，
+                # 则立即跳过本次循环，不再继续处理这个无效请求。
+                if not ip_to_assign:
                     continue
+                # --- 修复结束 ---
 
-                # 保留新版本中有用的逻辑：在分配成功后立即更新映射
                 if ip_to_assign and ip_to_assign != '0.0.0.0':
                     with ip_map_lock:
                         ip_to_mac_map[ip_to_assign] = mac
@@ -711,6 +699,64 @@ def run_dhcp_server(cfg, stop_evt):
             log_message(f"DHCP (67): 循环中发生错误: {e}", "ERROR")
             
     sock.close(); log_message("DHCP (67): 监听器已停止。")
+# =======================[ 替换结束 ]=======================
+    mac_to_ip, offered_ips, ip_pool = {}, {}, deque()
+    if cfg['dhcp_mode'] == 'dhcp':
+        try:
+            start_int = struct.unpack('!I', socket.inet_aton(cfg['ip_pool_start']))[0]
+            end_int = struct.unpack('!I', socket.inet_aton(cfg['ip_pool_end']))[0]
+            ip_pool.extend([socket.inet_ntoa(struct.pack('!I', i)) for i in range(start_int, end_int + 1)])
+        except Exception as e: log_message(f"DHCP (67): IP池创建失败: {e}", "ERROR"); return
+
+    def get_lease(mac):
+        if mac in mac_to_ip: return mac_to_ip[mac]
+        if mac in offered_ips and offered_ips[mac]['expires'] > time.time(): return offered_ips[mac]['ip']
+        if not ip_pool: log_message("DHCP (67): IP池已耗尽!", "WARNING"); return None
+        ip = ip_pool.popleft(); offered_ips[mac] = {'ip': ip, 'expires': time.time() + 60}; return ip
+
+    def confirm_lease(mac, req_ip):
+        if mac in mac_to_ip and mac_to_ip[mac] == req_ip: return req_ip
+        if mac in offered_ips and offered_ips[mac]['ip'] == req_ip:
+            mac_to_ip[mac] = req_ip; del offered_ips[mac]; return req_ip
+        if req_ip in ip_pool:
+            mac_to_ip[mac] = req_ip; ip_pool.remove(req_ip); return req_ip
+        return None
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1); sock.settimeout(1.0)
+    try:
+        sock.bind((cfg['listen_ip'], 67)); log_message(f"DHCP: 监听器已在 {cfg['listen_ip']}:67 启动 ({cfg['dhcp_mode']} 模式)")
+    except Exception as e: log_message(f"DHCP (67): 致命错误 - 无法绑定端口: {e}", "ERROR"); return
+    
+    while not stop_evt.is_set():
+        try:
+            data, addr = sock.recvfrom(1024)
+            mac = ":".join(f"{b:02x}" for b in data[28:34])
+            client_ip_from_packet = socket.inet_ntoa(data[12:16])
+            
+            if client_ip_from_packet != '0.0.0.0':
+                with ip_map_lock: ip_to_mac_map[client_ip_from_packet] = mac
+
+            opts = parse_dhcp_options(data)
+            msg_type = opts.get(53, b'\x00')[0]
+            
+            ip_to_assign = '0.0.0.0'
+            if cfg['dhcp_mode'] == 'dhcp':
+                if msg_type == 1:
+                    ip_to_assign = get_lease(mac)
+                elif msg_type == 3:
+                    req_ip = socket.inet_ntoa(opts[50]) if 50 in opts else client_ip_from_packet
+                    if req_ip and req_ip != '0.0.0.0': 
+                        ip_to_assign = confirm_lease(mac, req_ip)
+                if not ip_to_assign: continue
+                if ip_to_assign and ip_to_assign != '0.0.0.0':
+                    with ip_map_lock: ip_to_mac_map[ip_to_assign] = mac
+            
+            response_pkt = craft_dhcp_response(data, cfg, assigned_ip=ip_to_assign)
+            if response_pkt: sock.sendto(response_pkt, ('255.255.255.255', 68))
+        except socket.timeout: continue
+        except Exception as e: log_message(f"DHCP (67): 循环中发生错误: {e}", "ERROR")
+    sock.close(); log_message("DHCP (67): 监听器已停止。")
 
 def run_proxy_listener(cfg, stop_evt):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -722,11 +768,10 @@ def run_proxy_listener(cfg, stop_evt):
     while not stop_evt.is_set():
         try:
             data, addr = sock.recvfrom(1024)
-            mac = ":".join(f"{b:02x}" for b in data[28:34])
             client_ip_from_packet = socket.inet_ntoa(data[12:16])
             if client_ip_from_packet != '0.0.0.0':
-                with ip_map_lock:
-                    ip_to_mac_map[client_ip_from_packet] = mac
+                mac = ":".join(f"{b:02x}" for b in data[28:34])
+                with ip_map_lock: ip_to_mac_map[client_ip_from_packet] = mac
 
             response_pkt = craft_dhcp_response(data, cfg, assigned_ip=client_ip_from_packet, is_proxy_req=True)
             if response_pkt: sock.sendto(response_pkt, addr)
@@ -734,89 +779,50 @@ def run_proxy_listener(cfg, stop_evt):
         except Exception as e: log_message(f"ProxyDHCP (4011): 循环中发生错误: {e}", "ERROR")
     sock.close(); log_message("ProxyDHCP (4011): 监听器已停止。")
 
-def log_aggregated_failures():
-    """
-    这个函数在后台独立运行，像一个管家。
-    定期检查失败聚合器，只报告那些持续存在且未被成功传输所清除的真实失败。
-    """
-    while not stop_aggregator_event.is_set():
-        # 每15秒工作一次
-        stop_aggregator_event.wait(15)
-        if stop_aggregator_event.is_set():
-            break
-
-        with aggregator_lock:
-            now = time.time()
-            # 遍历键的副本以允许在循环中删除
-            for key, data in list(failure_aggregator.items()):
-                # 如果最后的失败记录发生在12秒前，我们就认为这是一个持续的真失败
-                if now - data['timestamp'] > 12:
-                    ip, filename = key.split(':', 1)
-                    count = data['count']
-                    # 打印汇总后的唯一错误日志
-                    log_message(f"TFTP: [传输失败] 客户端 {ip} 请求 '{filename}' 多次超时 ({count}次尝试)", "ERROR")
-                    # 清理掉这个已报告的条目
-                    del failure_aggregator[key]
-
 def run_tftp_server(cfg, stop_evt):
     tftp_root = os.path.realpath(cfg['tftp_root'])
     if not os.path.exists(tftp_root):
         try:
-            os.makedirs(tftp_root)
-            log_message(f"TFTP: 已创建根目录 '{tftp_root}'")
+            os.makedirs(tftp_root); log_message(f"TFTP: 已创建根目录 '{tftp_root}'")
         except OSError as e:
-            log_message(f"TFTP: 创建根目录失败: {e}", "ERROR")
-            return
+            log_message(f"TFTP: 创建根目录失败: {e}", "ERROR"); return
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(1.0)
     try:
         sock.bind((cfg['listen_ip'], 69))
     except Exception as e:
-        log_message(f"TFTP: 致命错误 - 无法绑定端口 69: {e}", "ERROR")
-        return
+        log_message(f"TFTP: 致命错误 - 无法绑定端口 69: {e}", "ERROR"); return
 
     use_multithread = cfg.get('tftp_multithread', True)
     executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix='TFTP') if use_multithread else None
     log_message(f"TFTP: 服务器已在 {cfg['listen_ip']}:69 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: '{tftp_root}')")
 
     def handle_request(initial_data, client_addr):
-        filepath = None
-        filename = None
-        transfer_successful = False
-        opcode = 0
+        filepath = None; filename = None; transfer_successful = False; opcode = 0
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tsock:
                 tsock.settimeout(5)
-
                 if len(initial_data) < 4: return
                 opcode = struct.unpack('!H', initial_data[:2])[0]
-                parts = initial_data[2:].split(b'\x00')
-                filename = parts[0].decode('ascii', 'ignore')
+                parts = initial_data[2:].split(b'\x00'); filename = parts[0].decode('ascii', 'ignore')
                 client_ip = client_addr[0]
                 
-                if opcode == 1: # READ (下载)
-                    if client_manager:
-                        client_manager.handle_file_transfer_start(client_ip, filename)
-
+                if opcode == 1:
+                    if client_manager: client_manager.handle_file_transfer_start(client_ip, filename)
                     _filename = filename.replace('\\', '/').lstrip('/')
                     filepath = os.path.realpath(os.path.join(tftp_root, _filename))
-
                     if not filepath.startswith(tftp_root) or not os.path.isfile(filepath):
-                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法或不存在的文件 '{filename}'", "WARNING")
+                        log_message(f"TFTP: [拒绝] {client_addr} 请求了非法文件 '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 1) + b'File not found\x00', client_addr); return
                     
-                    log_message(f"TFTP: [GET] {client_addr} 请求 '{filename}'")
                     file_size = os.path.getsize(filepath)
-                    
-                    blksize = 512 # 默认块大小
+                    blksize = 512
                     is_modern_client = len(parts) > 3 and parts[1].lower() == b'octet'
                     
                     if is_modern_client:
                         options = {parts[i].lower(): parts[i+1] for i in range(2, len(parts) - 1, 2)}
-                        oack_parts = []
-                        negotiated_blksize = 512
-                        
+                        oack_parts, negotiated_blksize = [], 512
                         if b'blksize' in options:
                             try:
                                 negotiated_blksize = max(512, min(int(options[b'blksize']), 1428))
@@ -825,28 +831,14 @@ def run_tftp_server(cfg, stop_evt):
                         if b'tsize' in options: oack_parts.append(b'tsize\x00' + str(file_size).encode() + b'\x00')
 
                         if oack_parts:
-                            oack_pkt = bytearray(struct.pack('!H', 6))
-                            for part in oack_parts:
-                                oack_pkt.extend(part)
-                            
+                            oack_pkt = bytearray(struct.pack('!H', 6)); [oack_pkt.extend(p) for p in oack_parts]
                             tsock.sendto(oack_pkt, client_addr)
-                            
                             try:
                                 tsock.settimeout(2.0)
-                                ack_data, ack_addr = tsock.recvfrom(512)
-                                client_addr = ack_addr # 更新客户端地址
-                                if len(ack_data) >= 4:
-                                    ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
-                                    if ack_opcode == 4 and ack_block_num == 0:
-                                        log_message(f"TFTP: {client_addr} 已确认OACK (blksize={negotiated_blksize})。开始快速传输。", "INFO")
-                                        blksize = negotiated_blksize
-                                    else:
-                                        log_message(f"TFTP: {client_addr} 对OACK响应异常，回退至标准模式。", "WARNING")
-                                else:
-                                    log_message(f"TFTP: {client_addr} 发送了无效的OACK确认，回退至标准模式。", "WARNING")
-                            except socket.timeout:
-                                log_message(f"TFTP: {client_addr} 未确认OACK，回退至标准模式。", "INFO")
-                            
+                                ack_data, ack_addr = tsock.recvfrom(512); client_addr = ack_addr
+                                if len(ack_data) >= 4 and struct.unpack('!HH', ack_data[:4]) == (4, 0):
+                                    blksize = negotiated_blksize
+                            except socket.timeout: pass
                             tsock.settimeout(5.0)
 
                     with open(filepath, 'rb') as f:
@@ -854,100 +846,71 @@ def run_tftp_server(cfg, stop_evt):
                         while not stop_evt.is_set():
                             chunk = f.read(blksize)
                             data_pkt = struct.pack('!HH', 3, block_num) + chunk
-                            
                             for retry in range(5):
                                 if stop_evt.is_set(): return
                                 tsock.sendto(data_pkt, client_addr)
                                 try:
                                     ack_data, ack_addr = tsock.recvfrom(512)
-                                    if len(ack_data) >= 4:
-                                        ack_opcode, ack_block_num = struct.unpack('!HH', ack_data[:4])
-                                        if ack_opcode == 4 and ack_block_num == block_num:
-                                            client_addr = ack_addr
-                                            break
-                                except socket.timeout:
-                                    continue
+                                    if len(ack_data) >= 4 and struct.unpack('!HH', ack_data[:4]) == (4, block_num):
+                                        client_addr = ack_addr; break
+                                except socket.timeout: continue
                             else:
-                                log_message(f"TFTP: [传输失败] 等待 {client_addr} 对块 {block_num} 的ACK多次超时", "ERROR")
-                                return
+                                log_message(f"TFTP: [失败] 等待 {client_addr} 对块 {block_num} ACK超时", "ERROR"); return
                             
                             if len(chunk) < blksize:
-                                transfer_successful = True
-                                log_message(f"TFTP: [成功] 文件 '{os.path.basename(filepath)}' -> {client_addr} 传输完成。")
-                                break
+                                transfer_successful = True; break
                             block_num = (block_num + 1) % 65536
                 
-                elif opcode == 2: # 上传逻辑保持不变
-                    log_message(f"TFTP: [WRITE] 收到来自 {client_addr} 对 '{filename}' 的上传请求。", "INFO")
+                elif opcode == 2:
                     sanitized_filename = filename.replace('\\', '/').lstrip('/')
                     if not sanitized_filename or '..' in sanitized_filename.split('/'):
-                        log_message(f"TFTP: [拒绝] 收到来自 {client_addr} 的无效或恶意文件名 '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 4) + b'Illegal TFTP operation\x00', client_addr); return
                     
                     filepath = os.path.join(tftp_root, sanitized_filename)
                     if not os.path.realpath(filepath).startswith(os.path.realpath(tftp_root)):
-                        log_message(f"TFTP: [拒绝] 检测到来自 {client_addr} 的目录遍历尝试 '{filename}'", "WARNING")
                         tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
-                    
-                    if os.path.exists(filepath):
-                        log_message(f"TFTP: [警告] 文件 '{filepath}' 已存在。客户端 {client_addr} 即将覆盖该文件。", "WARNING")
                     
                     try:
                         dir_path = os.path.dirname(filepath)
                         if not os.path.exists(dir_path): os.makedirs(dir_path)
                     except OSError as e:
-                        log_message(f"TFTP: [拒绝] 无法为 '{sanitized_filename}' 创建目录: {e}", "ERROR")
                         tsock.sendto(struct.pack('!HH', 5, 2) + b'Access violation\x00', client_addr); return
                     
                     tsock.sendto(struct.pack('!HH', 4, 0), client_addr)
-                    expected_block_num = 1
-                    total_bytes_written = 0
+                    expected_block_num, total_bytes_written = 1, 0
                     with open(filepath, 'wb') as f:
                         while True:
                             data, addr = tsock.recvfrom(516)
                             if len(data) < 4: continue
                             opcode_data, block_num = struct.unpack('!HH', data[:4])
-                            if opcode_data == 5: log_message(f"TFTP: [写入中断] 客户端 {addr} 报告错误。", "WARNING"); return
+                            if opcode_data == 5: return
                             if opcode_data != 3 or addr != client_addr: continue
                             if block_num == expected_block_num:
                                 chunk = data[4:]; f.write(chunk); total_bytes_written += len(chunk)
                                 tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
                                 expected_block_num = (expected_block_num + 1) % 65536
                                 if len(chunk) < 512:
-                                    log_message(f"TFTP: [写入成功] 文件 '{sanitized_filename}' ({total_bytes_written}字节) 已从 {client_addr} 接收完毕。")
-                                    transfer_successful = True
-                                    break
+                                    transfer_successful = True; break
                             elif block_num < expected_block_num:
                                 tsock.sendto(struct.pack('!HH', 4, block_num), client_addr)
                 
-        except socket.timeout:
-            log_message(f"TFTP: [超时] 与客户端 {client_addr} 的通信超时。", "ERROR")
-        except ConnectionResetError:
-            log_message(f"TFTP: 客户端 {client_addr} 已关闭连接 (可能传输已完成)。", "INFO")
-            transfer_successful = True
-        except Exception as e:
-            log_message(f"TFTP: 处理来自 {client_addr} 的请求时发生意外错误: {e}", "ERROR")
+        except (socket.timeout, ConnectionResetError): pass
+        except Exception as e: log_message(f"TFTP: 处理来自 {client_addr} 请求时出错: {e}", "ERROR")
         finally:
             if client_manager and filename and transfer_successful:
-                if opcode == 1:
-                    client_manager.handle_file_transfer_complete(client_ip, filename)
-                elif opcode == 2:
-                    client_manager.handle_file_upload_complete(client_ip, filename)
+                if opcode == 1: client_manager.handle_file_transfer_complete(client_ip, filename)
+                elif opcode == 2: client_manager.handle_file_upload_complete(client_ip, filename)
 
     try:
         while not stop_evt.is_set():
             try:
                 data, addr = sock.recvfrom(1500)
-                if use_multithread and executor:
-                    executor.submit(handle_request, data, addr)
-                else:
-                    threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
-            except socket.timeout:
-                continue
+                if use_multithread and executor: executor.submit(handle_request, data, addr)
+                else: threading.Thread(target=handle_request, args=(data, addr), daemon=True).start()
+            except socket.timeout: continue
     finally:
         if executor: executor.shutdown(wait=False)
-        sock.close()
-        log_message("TFTP: 服务器已停止。")
+        sock.close(); log_message("TFTP: 服务器已停止。")
 
 class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, client_manager_instance=None, **kwargs):
@@ -956,87 +919,58 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         fpath = self.translate_path(self.path)
-
         if os.path.isdir(fpath):
-            log_message(f"HTTP: [目录浏览] 客户端 {self.client_address[0]} 正在浏览 '{self.path}'")
+            log_message(f"HTTP: [目录浏览] {self.client_address[0]} 浏览 '{self.path}'")
             super().do_GET()
             return
 
         if not os.path.isfile(fpath):
-            self.send_error(404, "File not found")
-            return
+            self.send_error(404, "File not found"); return
 
-        filename = os.path.basename(fpath)
-        client_ip = self.client_address[0]
-        if self.client_manager:
-            self.client_manager.handle_file_transfer_start(client_ip, filename)
+        filename, client_ip = os.path.basename(fpath), self.client_address[0]
+        if self.client_manager: self.client_manager.handle_file_transfer_start(client_ip, filename)
         
         transfer_successful = False
         try:
             with open(fpath, 'rb') as f:
-                fs = os.fstat(f.fileno())
-                size = fs.st_size
+                fs, size = os.fstat(f.fileno()), os.fstat(f.fileno()).st_size
                 range_header = self.headers.get('Range')
-                
                 if not range_header:
-                    self.send_response(200)
-                    self.send_header("Content-type", self.guess_type(fpath))
-                    self.send_header("Content-Length", str(size))
-                    self.send_header("Accept-Ranges", "bytes")
-                    self.end_headers()
-                    self.copyfile(f, self.wfile)
-                    log_message(f"HTTP: [200 GET] {self.path} -> {self.client_address[0]}")
+                    self.send_response(200); self.send_header("Content-type", self.guess_type(fpath))
+                    self.send_header("Content-Length", str(size)); self.send_header("Accept-Ranges", "bytes")
+                    self.end_headers(); self.copyfile(f, self.wfile)
                 else:
-                    self.send_response(206)
-                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_response(206); self.send_header("Accept-Ranges", "bytes")
                     try:
                         start_str, end_str = range_header.replace('bytes=', '').split('-')
                         start = int(start_str) if start_str else 0
                         end = int(end_str) if end_str else size - 1
-                        if range_header.startswith('bytes=-'):
-                            start = size - int(end_str)
-                            end = size - 1
-                    except ValueError:
-                        self.send_error(400, "Invalid Range header")
-                        return
+                        if range_header.startswith('bytes=-'): start = size - int(end_str); end = size - 1
+                    except ValueError: self.send_error(400, "Invalid Range header"); return
 
                     if start >= size or end >= size or start > end:
-                        self.send_response(416)
-                        self.send_header("Content-Range", f"bytes */{size}")
-                        self.end_headers()
-                        return
+                        self.send_response(416); self.send_header("Content-Range", f"bytes */{size}"); self.end_headers(); return
                         
                     self.send_header("Content-type", self.guess_type(fpath))
                     self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                     content_length = end - start + 1
-                    self.send_header("Content-Length", str(content_length))
-                    self.end_headers()
-                    
-                    f.seek(start)
-                    self.copyfile(f, self.wfile, length=content_length)
-                    log_message(f"HTTP: [206 Partial] {self.path} ({start}-{end}) -> {self.client_address[0]}")
-            
+                    self.send_header("Content-Length", str(content_length)); self.end_headers()
+                    f.seek(start); self.copyfile(f, self.wfile, length=content_length)
             transfer_successful = True
-        except (BrokenPipeError, ConnectionResetError):
-            transfer_successful = True
-        except OSError:
-            self.send_error(404, "File not found")
+        except (BrokenPipeError, ConnectionResetError): transfer_successful = True
+        except OSError: self.send_error(404, "File not found")
         finally:
             if self.client_manager and transfer_successful:
                 self.client_manager.handle_file_transfer_complete(client_ip, filename)
 
     def copyfile(self, source, outputfile, length=None):
-        bytes_to_send = length if length is not None else -1
-        sent = 0
+        bytes_to_send = length if length is not None else -1; sent = 0
         while bytes_to_send < 0 or sent < bytes_to_send:
             buf_size = 65536
-            if bytes_to_send > 0:
-                buf_size = min(buf_size, bytes_to_send - sent)
+            if bytes_to_send > 0: buf_size = min(buf_size, bytes_to_send - sent)
             buf = source.read(buf_size)
-            if not buf:
-                break
-            outputfile.write(buf)
-            sent += len(buf)
+            if not buf: break
+            outputfile.write(buf); sent += len(buf)
 
 class ThreadPoolTCPServer(socketserver.TCPServer):
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
@@ -1047,25 +981,17 @@ class ThreadPoolTCPServer(socketserver.TCPServer):
     def process_request_thread(self, request, client_address):
         try:
             self.finish_request(request, client_address)
-        except Exception:
-            self.handle_error(request, client_address)
-        finally:
-            self.shutdown_request(request)
+        except Exception: self.handle_error(request, client_address)
+        finally: self.shutdown_request(request)
     def server_close(self):
         super().server_close()
-        if hasattr(self, 'executor'):
-            self.executor.shutdown(wait=True)
+        if hasattr(self, 'executor'): self.executor.shutdown(wait=True)
 
 def run_http_server(cfg, stop_evt):
     http_root_dir = os.path.realpath(cfg['http_root'])
-    
     if not os.path.exists(http_root_dir):
-        try:
-            os.makedirs(http_root_dir)
-            log_message(f"HTTP: 已创建根目录 '{http_root_dir}'")
-        except OSError as e:
-            log_message(f"HTTP: 创建根目录失败: {e}", "ERROR")
-            return
+        try: os.makedirs(http_root_dir); log_message(f"HTTP: 已创建根目录 '{http_root_dir}'")
+        except OSError as e: log_message(f"HTTP: 创建根目录失败: {e}", "ERROR"); return
 
     class DirectoryAwareHandler(RangeRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -1081,20 +1007,15 @@ def run_http_server(cfg, stop_evt):
     try:
         with http_server_class((cfg['listen_ip'], cfg['http_port']), Handler) as httpd:
             log_message(f"HTTP: 服务器已在 http://{cfg['server_ip']}:{cfg['http_port']}/ 启动 ({'多线程' if use_multithread else '单线程'}, 根目录: {http_root_dir})")
-            server_thread = threading.Thread(target=httpd.serve_forever)
-            server_thread.daemon = True
-            server_thread.start()
-            stop_evt.wait()
-            httpd.shutdown()
+            server_thread = threading.Thread(target=httpd.serve_forever); server_thread.daemon = True; server_thread.start()
+            stop_evt.wait(); httpd.shutdown()
     except Exception as e:
         log_message(f"HTTP: 致命错误 - 无法启动服务器: {e}", "ERROR")
-        
     log_message("HTTP: 服务器已停止。")
 
 def manage_smb_share(settings, start=True):
     if os.name != 'nt':
-        if start and settings.get('smb_enabled'):
-            log_message("SMB: 自动共享管理仅在Windows上受支持。")
+        if start and settings.get('smb_enabled'): log_message("SMB: 自动共享仅在Windows上受支持。")
         return
     share_name, share_path = settings.get('smb_share_name'), os.path.realpath(settings.get('smb_root'))
     if not share_name or not share_path: return
@@ -1111,7 +1032,7 @@ def manage_smb_share(settings, start=True):
             perm_text = '完全控制' if 'FULL' in permissions else '只读'
             cmd = ['net', 'share', f'{share_name}={share_path}', permissions]
             subprocess.run(cmd, check=True, capture_output=True, text=True, creationflags=creation_flags)
-            log_message(f"SMB: 已将 '{share_path}' 共享为 '{share_name}' ({perm_text})。访问路径: \\\\{settings['server_ip']}\\{share_name}")
+            log_message(f"SMB: 已共享 '{share_path}' 为 '{share_name}' ({perm_text})。")
         except subprocess.CalledProcessError as e:
             log_message(f"SMB: 创建共享失败。请以管理员身份运行。详情: {e.stderr.strip()}", "ERROR")
 
@@ -1133,8 +1054,7 @@ def start_services():
         dhcp_thread = threading.Thread(target=run_dhcp_server, args=(current_settings, stop_event), daemon=True); dhcp_thread.start()
         proxy_thread = threading.Thread(target=run_proxy_listener, args=(current_settings, stop_event), daemon=True); proxy_thread.start()
         if current_settings['dhcp_mode'] == 'dhcp':
-            dhcp_detector_thread = threading.Thread(target=detect_other_dhcp_servers, args=(stop_event,), daemon=True)
-            dhcp_detector_thread.start()
+            dhcp_detector_thread = threading.Thread(target=detect_other_dhcp_servers, args=(stop_event,), daemon=True); dhcp_detector_thread.start()
     if current_settings['tftp_enabled']:
         tftp_thread = threading.Thread(target=run_tftp_server, args=(current_settings, stop_event), daemon=True); tftp_thread.start()
     if current_settings['http_enabled']:
@@ -1146,14 +1066,12 @@ def stop_services():
     for t in [dhcp_thread, proxy_thread, tftp_thread, http_thread, dhcp_detector_thread]:
         if t and t.is_alive(): t.join(timeout=1.5)
     manage_smb_share(SETTINGS.copy(), start=False)
-    
     if client_manager:
         client_manager.set_all_clients_offline_in_ini()
-
     log_message("--- 所有服务已停止 ---")
 
 # ================================================================= #
-# ======================== GUI-spezifischer Code ===================== #
+# =========================== GUI代码 ============================ #
 # ================================================================= #
 
 class ConfigWindow(tk.Toplevel):
@@ -1164,101 +1082,64 @@ class ConfigWindow(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.settings_vars = {}
-        
         self._ip_update_job = None
 
         notebook = ttk.Notebook(self)
         notebook.pack(pady=10, padx=10, expand=True, fill="both")
-        general_frame = ttk.Frame(notebook, padding="10")
-        path_frame = ttk.Frame(notebook, padding="10")
-        boot_files_frame = ttk.Frame(notebook, padding="10")
-        pxe_bios_frame = ttk.Frame(notebook, padding="10")
-        pxe_uefi_frame = ttk.Frame(notebook, padding="10")
-        pxe_ipxe_frame = ttk.Frame(notebook, padding="10")
-        dhcp_options_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(general_frame, text="常规")
-        notebook.add(path_frame, text="服务")
-        notebook.add(boot_files_frame, text="引导文件")
-        notebook.add(pxe_bios_frame, text="PXE 菜单 (BIOS)")
-        notebook.add(pxe_uefi_frame, text="PXE 菜单 (UEFI)")
-        notebook.add(pxe_ipxe_frame, text="iPXE 菜单")
-        notebook.add(dhcp_options_frame, text="DHCP 自定义选项")
-        self.create_general_tab(general_frame)
-        self.create_path_tab(path_frame)
-        self.create_boot_files_tab(boot_files_frame)
-        self.create_pxe_menu_tab(pxe_bios_frame, 'bios')
-        self.create_pxe_menu_tab(pxe_uefi_frame, 'uefi')
-        self.create_pxe_menu_tab(pxe_ipxe_frame, 'ipxe')
-        dhcp_option_handler.create_dhcp_options_tab(dhcp_options_frame, self.settings_vars, SETTINGS)
+        tabs = ["常规", "服务", "引导文件", "PXE 菜单 (BIOS)", "PXE 菜单 (UEFI)", "iPXE 菜单", "DHCP 自定义选项"]
+        frames = {name: ttk.Frame(notebook, padding="10") for name in tabs}
+        for name, frame in frames.items(): notebook.add(frame, text=name)
+        
+        self.create_general_tab(frames["常规"])
+        self.create_path_tab(frames["服务"])
+        self.create_boot_files_tab(frames["引导文件"])
+        self.create_pxe_menu_tab(frames["PXE 菜单 (BIOS)"], 'bios')
+        self.create_pxe_menu_tab(frames["PXE 菜单 (UEFI)"], 'uefi')
+        self.create_pxe_menu_tab(frames["iPXE 菜单"], 'ipxe')
+        dhcp_option_handler.create_dhcp_options_tab(frames["DHCP 自定义选项"], self.settings_vars, SETTINGS)
         
         self._enforce_ipxe_menu_dependency()
-
-        button_frame = ttk.Frame(self)
-        button_frame.pack(pady=5, padx=10, fill='x')
+        button_frame = ttk.Frame(self); button_frame.pack(pady=5, padx=10, fill='x')
         ttk.Button(button_frame, text="保存并关闭", command=self.save_and_close).pack(side="right", padx=5)
         ttk.Button(button_frame, text="取消", command=self.destroy).pack(side="right")
 
     def _enforce_ipxe_menu_dependency(self, *args):
         is_bios_enabled = self.settings_vars.get('pxe_menu_bios_enabled', tk.BooleanVar(value=False)).get()
         is_uefi_enabled = self.settings_vars.get('pxe_menu_uefi_enabled', tk.BooleanVar(value=False)).get()
-
-        if is_bios_enabled or is_uefi_enabled:
-            if 'pxe_menu_ipxe_enabled' in self.settings_vars:
-                self.settings_vars['pxe_menu_ipxe_enabled'].set(True)
+        if (is_bios_enabled or is_uefi_enabled) and 'pxe_menu_ipxe_enabled' in self.settings_vars:
+            self.settings_vars['pxe_menu_ipxe_enabled'].set(True)
 
     def _recalculate_dhcp_pool(self, basis_ip):
         try:
             ip_parts = basis_ip.split('.')
-            if len(ip_parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in ip_parts):
-                return
-            
-            ip_prefix = ".".join(ip_parts[:-1])
-            server_octet = int(ip_parts[-1])
-            
-            start_octet = server_octet + 100
-            
-            if start_octet > 254:
-                start_octet = 101
-            
+            if len(ip_parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in ip_parts): return
+            ip_prefix, server_octet = ".".join(ip_parts[:-1]), int(ip_parts[-1])
+            start_octet = 101 if server_octet + 100 > 254 else server_octet + 100
             end_octet = min(start_octet + 49, 254)
-
-            if start_octet > end_octet:
-                end_octet = start_octet
-
-            pool_start = f"{ip_prefix}.{start_octet}"
-            pool_end = f"{ip_prefix}.{end_octet}"
-            router = f"{ip_prefix}.1"
-            dns = router
-
+            if start_octet > end_octet: end_octet = start_octet
+            pool_start, pool_end = f"{ip_prefix}.{start_octet}", f"{ip_prefix}.{end_octet}"
+            router = dns = f"{ip_prefix}.1"
             if 'ip_pool_start' in self.settings_vars: self.settings_vars['ip_pool_start'].set(pool_start)
             if 'ip_pool_end' in self.settings_vars: self.settings_vars['ip_pool_end'].set(pool_end)
             if 'router_ip' in self.settings_vars: self.settings_vars['router_ip'].set(router)
             if 'dns_server_ip' in self.settings_vars: self.settings_vars['dns_server_ip'].set(dns)
-        except (ValueError, IndexError):
-            pass
+        except (ValueError, IndexError): pass
 
     def _perform_ip_update(self):
         self._ip_update_job = None
         listen_ip_val = self.settings_vars['listen_ip'].get()
-        
         listen_ip = '0.0.0.0' if '0.0.0.0' in listen_ip_val else listen_ip_val
-        
         new_server_ip = listen_ip
         if listen_ip == '0.0.0.0':
-            all_ips = get_all_ips()
-            real_ips = [ip for ip in all_ips if ip not in ['127.0.0.1', '0.0.0.0']]
+            all_ips = get_all_ips(); real_ips = [ip for ip in all_ips if ip not in ['127.0.0.1', '0.0.0.0']]
             new_server_ip = real_ips[0] if real_ips else ''
-
         if new_server_ip:
             if self.settings_vars['server_ip'].get() != new_server_ip:
                 self.settings_vars['server_ip'].set(new_server_ip)
-            
             self._recalculate_dhcp_pool(new_server_ip)
 
     def _schedule_ip_update(self, *args):
-        if self._ip_update_job is not None:
-            self.after_cancel(self._ip_update_job)
-        
+        if self._ip_update_job is not None: self.after_cancel(self._ip_update_job)
         self._ip_update_job = self.after(150, self._perform_ip_update)
 
     def create_general_tab(self, parent):
@@ -1268,208 +1149,167 @@ class ConfigWindow(tk.Toplevel):
         self.settings_vars['listen_ip'] = tk.StringVar(value=SETTINGS.get('listen_ip'))
         ip_combo = ttk.Combobox(parent, textvariable=self.settings_vars['listen_ip'], values=ip_options)
         ip_combo.grid(row=0, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
-        
         self.settings_vars['listen_ip'].trace_add('write', self._schedule_ip_update)
 
         ttk.Label(parent, text="本机服务器IP:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
         self.settings_vars['server_ip'] = tk.StringVar(value=SETTINGS.get('server_ip'))
-        server_ip_combo = ttk.Combobox(parent, textvariable=self.settings_vars['server_ip'], values=ips)
-        server_ip_combo.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
+        ttk.Combobox(parent, textvariable=self.settings_vars['server_ip'], values=ips).grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
         
-        ttk.Label(parent, text="(用于通告给客户端，如TFTP Server IP)").grid(row=2, column=1, sticky="w", padx=5, pady=2, columnspan=3)
+        ttk.Label(parent, text="(用于通告给客户端)").grid(row=2, column=1, sticky="w", padx=5, pady=2, columnspan=3)
         ttk.Separator(parent, orient='horizontal').grid(row=3, column=0, columnspan=4, sticky='ew', pady=15)
         self.settings_vars['dhcp_enabled'] = tk.BooleanVar(value=SETTINGS.get('dhcp_enabled'))
-        dhcp_enabled_check = ttk.Checkbutton(parent, text="启用 DHCP 服务", variable=self.settings_vars['dhcp_enabled'], command=self.toggle_dhcp_controls)
-        dhcp_enabled_check.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 10))
-        self.dhcp_mode_label = ttk.Label(parent, text="DHCP 模式:")
-        self.dhcp_mode_label.grid(row=5, column=0, sticky="w", padx=5, pady=10)
+        ttk.Checkbutton(parent, text="启用 DHCP 服务", variable=self.settings_vars['dhcp_enabled'], command=self.toggle_dhcp_controls).grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 10))
+        self.dhcp_mode_label = ttk.Label(parent, text="DHCP 模式:"); self.dhcp_mode_label.grid(row=5, column=0, sticky="w", padx=5, pady=10)
         self.settings_vars['dhcp_mode'] = tk.StringVar(value=SETTINGS.get('dhcp_mode'))
-        self.radio_frame = ttk.Frame(parent)
-        self.radio_frame.grid(row=5, column=1, columnspan=3, sticky="w")
-        self.dhcp_radio = ttk.Radiobutton(self.radio_frame, text="DHCP (完整模式)", variable=self.settings_vars['dhcp_mode'], value='dhcp')
-        self.dhcp_radio.pack(side="left")
-        self.proxy_radio = ttk.Radiobutton(self.radio_frame, text="Proxy (代理模式)", variable=self.settings_vars['dhcp_mode'], value='proxy')
-        self.proxy_radio.pack(side="left", padx=(10,0))
-        self.dhcp_settings_frame = ttk.LabelFrame(parent, text="DHCP (完整模式) 设置", padding="10")
-        self.dhcp_settings_frame.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0), padx=2)
+        self.radio_frame = ttk.Frame(parent); self.radio_frame.grid(row=5, column=1, columnspan=3, sticky="w")
+        self.dhcp_radio = ttk.Radiobutton(self.radio_frame, text="DHCP (完整模式)", variable=self.settings_vars['dhcp_mode'], value='dhcp'); self.dhcp_radio.pack(side="left")
+        self.proxy_radio = ttk.Radiobutton(self.radio_frame, text="Proxy (代理模式)", variable=self.settings_vars['dhcp_mode'], value='proxy'); self.proxy_radio.pack(side="left", padx=(10,0))
+        self.dhcp_settings_frame = ttk.LabelFrame(parent, text="DHCP (完整模式) 设置", padding="10"); self.dhcp_settings_frame.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0), padx=2)
         self.dhcp_settings_frame.columnconfigure(1, weight=1); self.dhcp_settings_frame.columnconfigure(3, weight=1)
         fields = [("地址池起始:", 'ip_pool_start', 0, 0), ("地址池结束:", 'ip_pool_end', 0, 2),
-                  ("子网掩码 (Opt 1):", 'subnet_mask', 1, 0), ("租约 (秒, Opt 51):", 'lease_time', 1, 2),
-                  ("网关 (Opt 3):", 'router_ip', 2, 0), ("DNS (Opt 6):", 'dns_server_ip', 2, 2)]
+                  ("子网掩码:", 'subnet_mask', 1, 0), ("租约(秒):", 'lease_time', 1, 2),
+                  ("网关:", 'router_ip', 2, 0), ("DNS:", 'dns_server_ip', 2, 2)]
         for label, key, r, c in fields:
             ttk.Label(self.dhcp_settings_frame, text=label).grid(row=r, column=c, sticky="w", pady=2, padx=5)
-            VarClass = tk.IntVar if 'lease_time' in key else tk.StringVar
-            self.settings_vars[key] = VarClass(value=SETTINGS.get(key))
+            self.settings_vars[key] = tk.StringVar(value=SETTINGS.get(key))
             ttk.Entry(self.dhcp_settings_frame, textvariable=self.settings_vars[key]).grid(row=r, column=c+1, sticky="ew", pady=2, padx=5)
         self.settings_vars['dhcp_mode'].trace_add('write', self.toggle_dhcp_fields); self.toggle_dhcp_controls()
 
     def create_path_tab(self, parent):
         parent.columnconfigure(1, weight=1)
-        def browse_directory(path_var):
-            directory = filedialog.askdirectory()
-            if directory: path_var.set(os.path.normpath(directory))
-        def set_all_paths():
-            self.settings_vars['tftp_root'].set('.')
-            self.settings_vars['http_root'].set('.')
-            self.settings_vars['smb_root'].set('.')
-        tftp_frame = ttk.Frame(parent)
-        tftp_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
-        self.settings_vars['tftp_enabled'] = tk.BooleanVar(value=SETTINGS.get('tftp_enabled'))
-        ttk.Checkbutton(tftp_frame, text="启用 TFTP 服务", variable=self.settings_vars['tftp_enabled']).pack(side="left")
-        self.settings_vars['tftp_multithread'] = tk.BooleanVar(value=SETTINGS.get('tftp_multithread'))
-        ttk.Checkbutton(tftp_frame, text="多线程处理", variable=self.settings_vars['tftp_multithread']).pack(side="left", padx=(15,0))
-        ttk.Label(parent, text="TFTP 根目录:").grid(row=1, column=0, sticky="w", pady=5)
-        self.settings_vars['tftp_root'] = tk.StringVar(value=SETTINGS.get('tftp_root'))
-        ttk.Entry(parent, textvariable=self.settings_vars['tftp_root']).grid(row=1, column=1, sticky="ew", pady=5)
-        ttk.Button(parent, text="浏览...", command=lambda: browse_directory(self.settings_vars['tftp_root'])).grid(row=1, column=2, padx=5, pady=5)
-        ttk.Separator(parent).grid(row=2, columnspan=3, sticky='ew', pady=10)
-        http_frame = ttk.Frame(parent); http_frame.grid(row=3, column=0, columnspan=3, sticky="ew")
-        self.settings_vars['http_enabled'] = tk.BooleanVar(value=SETTINGS.get('http_enabled'))
-        ttk.Checkbutton(http_frame, text="启用 HTTP 服务", variable=self.settings_vars['http_enabled']).pack(side="left")
-        self.settings_vars['http_multithread'] = tk.BooleanVar(value=SETTINGS.get('http_multithread'))
-        ttk.Checkbutton(http_frame, text="多线程处理", variable=self.settings_vars['http_multithread']).pack(side="left", padx=(15,0))
-        ttk.Label(parent, text="HTTP 端口:").grid(row=4, column=0, sticky="w", pady=5)
-        self.settings_vars['http_port'] = tk.IntVar(value=SETTINGS.get('http_port'))
-        ttk.Entry(parent, textvariable=self.settings_vars['http_port'], width=10).grid(row=4, column=1, sticky="w", pady=5)
-        ttk.Label(parent, text="HTTP 根目录:").grid(row=5, column=0, sticky="w", pady=5)
-        self.settings_vars['http_root'] = tk.StringVar(value=SETTINGS.get('http_root'))
-        ttk.Entry(parent, textvariable=self.settings_vars['http_root']).grid(row=5, column=1, sticky="ew", pady=5)
-        ttk.Button(parent, text="浏览...", command=lambda: browse_directory(self.settings_vars['http_root'])).grid(row=5, column=2, padx=5, pady=5)
-        ttk.Separator(parent).grid(row=6, columnspan=3, sticky='ew', pady=10)
-        self.settings_vars['smb_enabled'] = tk.BooleanVar(value=SETTINGS.get('smb_enabled'))
-        ttk.Checkbutton(parent, text="启用 SMB 文件共享 (仅Windows)", variable=self.settings_vars['smb_enabled']).grid(row=7, column=0, columnspan=3, sticky="w")
-        ttk.Label(parent, text="SMB 共享名称:").grid(row=8, column=0, sticky="w", pady=5)
-        self.settings_vars['smb_share_name'] = tk.StringVar(value=SETTINGS.get('smb_share_name'))
-        ttk.Entry(parent, textvariable=self.settings_vars['smb_share_name']).grid(row=8, column=1, sticky="ew", pady=5)
-        ttk.Label(parent, text="共享权限:").grid(row=9, column=0, sticky="w", pady=5)
-        self.settings_vars['smb_permissions'] = tk.StringVar(value=SETTINGS.get('smb_permissions', 'read'))
-        smb_perm_frame = ttk.Frame(parent); smb_perm_frame.grid(row=9, column=1, sticky="w")
-        ttk.Radiobutton(smb_perm_frame, text="只读", variable=self.settings_vars['smb_permissions'], value='read').pack(side="left")
-        ttk.Radiobutton(smb_perm_frame, text="可写", variable=self.settings_vars['smb_permissions'], value='full').pack(side="left", padx=(10,0))
-        ttk.Label(parent, text="SMB 根目录:").grid(row=10, column=0, sticky="w", pady=5)
-        self.settings_vars['smb_root'] = tk.StringVar(value=SETTINGS.get('smb_root'))
-        ttk.Entry(parent, textvariable=self.settings_vars['smb_root']).grid(row=10, column=1, sticky="ew", pady=5)
-        ttk.Button(parent, text="浏览...", command=lambda: browse_directory(self.settings_vars['smb_root'])).grid(row=10, column=2, padx=5, pady=5)
-        ttk.Separator(parent).grid(row=11, columnspan=3, sticky='ew', pady=15)
-        ttk.Button(parent, text="一键设置为当前目录", command=set_all_paths).grid(row=12, column=1, sticky="w", pady=10)
+        def browse_dir(var):
+            d = filedialog.askdirectory();
+            if d: var.set(os.path.normpath(d))
+        def set_all_to_current():
+            for key in ['tftp_root', 'http_root', 'smb_root']: self.settings_vars[key].set('.')
+        
+        services = [
+            ('tftp', 'TFTP 服务', 0), ('http', 'HTTP 服务', 3), ('smb', 'SMB 文件共享 (仅Windows)', 7)
+        ]
+        for name, text, row in services:
+            frame = ttk.Frame(parent); frame.grid(row=row, column=0, columnspan=3, sticky="ew")
+            self.settings_vars[f'{name}_enabled'] = tk.BooleanVar(value=SETTINGS.get(f'{name}_enabled'))
+            ttk.Checkbutton(frame, text=f"启用 {text}", variable=self.settings_vars[f'{name}_enabled']).pack(side="left")
+            if name != 'smb':
+                self.settings_vars[f'{name}_multithread'] = tk.BooleanVar(value=SETTINGS.get(f'{name}_multithread'))
+                ttk.Checkbutton(frame, text="多线程", variable=self.settings_vars[f'{name}_multithread']).pack(side="left", padx=(15,0))
+            
+            if name == 'http':
+                ttk.Label(parent, text="HTTP 端口:").grid(row=row+1, column=0, sticky="w", pady=5)
+                self.settings_vars['http_port'] = tk.IntVar(value=SETTINGS.get('http_port'))
+                ttk.Entry(parent, textvariable=self.settings_vars['http_port'], width=10).grid(row=row+1, column=1, sticky="w")
+            
+            ttk.Label(parent, text=f"{name.upper()} 根目录:").grid(row=row+2, column=0, sticky="w", pady=5)
+            self.settings_vars[f'{name}_root'] = tk.StringVar(value=SETTINGS.get(f'{name}_root'))
+            ttk.Entry(parent, textvariable=self.settings_vars[f'{name}_root']).grid(row=row+2, column=1, sticky="ew")
+            ttk.Button(parent, text="...", command=lambda v=self.settings_vars[f'{name}_root']: browse_dir(v)).grid(row=row+2, column=2, padx=5)
+            
+            if name == 'smb':
+                ttk.Label(parent, text="共享名称:").grid(row=row+1, column=0, sticky="w", pady=5)
+                self.settings_vars['smb_share_name'] = tk.StringVar(value=SETTINGS.get('smb_share_name'))
+                ttk.Entry(parent, textvariable=self.settings_vars['smb_share_name']).grid(row=row+1, column=1, sticky="ew")
+                
+            ttk.Separator(parent).grid(row=row+3, columnspan=3, sticky='ew', pady=10)
+
+        ttk.Button(parent, text="一键设为当前目录", command=set_all_to_current).grid(row=12, column=1, sticky="w", pady=10)
 
     def create_boot_files_tab(self, parent):
         parent.columnconfigure(1, weight=1)
-        new_description = """这些文件仅作为后备选项使用。
-当对应客户端类型 (BIOS, UEFI, 或 iPXE) 的“菜单”功能被禁用时，服务器将提供这里指定的文件。"""
-        ttk.Label(parent, text=new_description, wraplength=500, justify=tk.LEFT).grid(row=0, column=0, columnspan=3, sticky="w", pady=(5,15), padx=5)
+        ttk.Label(parent, text="当对应客户端的菜单功能被禁用时，将提供以下后备启动文件。", wraplength=500).grid(row=0, column=0, columnspan=3, sticky="w", pady=(5,15))
         files_map = [("BIOS 启动文件:", 'bootfile_bios'), ("UEFI32 启动文件:", 'bootfile_uefi32'),
                      ("UEFI64 启动文件:", 'bootfile_uefi64'), ("iPXE 脚本文件:", 'bootfile_ipxe')]
-        for i, (label, key) in enumerate(files_map):
-            ttk.Label(parent, text=label).grid(row=i+1, column=0, sticky="w", pady=5, padx=5)
+        for i, (label, key) in enumerate(files_map, 1):
+            ttk.Label(parent, text=label).grid(row=i, column=0, sticky="w", pady=5, padx=5)
             self.settings_vars[key] = tk.StringVar(value=SETTINGS.get(key))
-            ttk.Entry(parent, textvariable=self.settings_vars[key]).grid(row=i+1, column=1, sticky="ew", pady=5, padx=5)
+            ttk.Entry(parent, textvariable=self.settings_vars[key]).grid(row=i, column=1, sticky="ew", pady=5, padx=5)
 
     def create_pxe_menu_tab(self, parent, arch_type):
         parent.columnconfigure(1, weight=1)
         enabled_key = f'pxe_menu_{arch_type}_enabled'
         self.settings_vars[enabled_key] = tk.BooleanVar(value=SETTINGS.get(enabled_key))
         
-        menu_check_text = f"为 {arch_type.upper()} 客户端启用此菜单"
-        if arch_type == 'ipxe':
-            menu_check_text = "为 iPXE 环境启用此菜单"
-
-        check_frame = ttk.Frame(parent)
-        check_frame.grid(row=0, column=0, columnspan=2, sticky="w", pady=5)
-        
-        menu_check = ttk.Checkbutton(check_frame, text=menu_check_text, variable=self.settings_vars[enabled_key])
+        check_frame = ttk.Frame(parent); check_frame.grid(row=0, column=0, columnspan=2, sticky="w", pady=5)
+        menu_check = ttk.Checkbutton(check_frame, text=f"为 {arch_type.upper()} 客户端启用此菜单", variable=self.settings_vars[enabled_key])
         menu_check.pack(side="left")
-
         if arch_type in ['bios', 'uefi']:
             menu_check.config(command=self._enforce_ipxe_menu_dependency)
-            ttk.Label(check_frame, text="(依赖iPXE菜单，将自动启用)", foreground="grey").pack(side="left", padx=5)
+            ttk.Label(check_frame, text="(将自动启用iPXE菜单)", foreground="grey").pack(side="left", padx=5)
 
-        pxe_menu_frame = ttk.LabelFrame(parent, text="菜单设置", padding="10")
-        pxe_menu_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=5); pxe_menu_frame.columnconfigure(1, weight=1)
+        frame = ttk.LabelFrame(parent, text="菜单设置", padding="10"); frame.grid(row=1, column=0, columnspan=2, sticky="ew"); frame.columnconfigure(1, weight=1)
         prompt_key, timeout_key, items_key = f'pxe_menu_{arch_type}_prompt', f'pxe_menu_{arch_type}_timeout', f'pxe_menu_{arch_type}_items'
-        ttk.Label(pxe_menu_frame, text="菜单提示文本:").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Label(frame, text="提示文本:").grid(row=0, column=0, sticky="w", pady=5)
         self.settings_vars[prompt_key] = tk.StringVar(value=SETTINGS.get(prompt_key))
-        ttk.Entry(pxe_menu_frame, textvariable=self.settings_vars[prompt_key]).grid(row=0, column=1, sticky="ew", pady=5)
-        ttk.Label(pxe_menu_frame, text="菜单超时 (秒):").grid(row=1, column=0, sticky="w", pady=5)
-        timeout_frame = ttk.Frame(pxe_menu_frame)
-        timeout_frame.grid(row=1, column=1, sticky="ew", pady=5)
+        ttk.Entry(frame, textvariable=self.settings_vars[prompt_key]).grid(row=0, column=1, sticky="ew", pady=5)
+        ttk.Label(frame, text="超时(秒):").grid(row=1, column=0, sticky="w", pady=5)
+        timeout_frame = ttk.Frame(frame); timeout_frame.grid(row=1, column=1, sticky="ew")
         self.settings_vars[timeout_key] = tk.IntVar(value=SETTINGS.get(timeout_key))
         ttk.Entry(timeout_frame, textvariable=self.settings_vars[timeout_key], width=10).pack(side="left")
         randomize_key = f'pxe_menu_{arch_type}_randomize_timeout'
         self.settings_vars[randomize_key] = tk.BooleanVar(value=SETTINGS.get(randomize_key))
-        ttk.Checkbutton(timeout_frame, text="客户机时间随机分配", variable=self.settings_vars[randomize_key]).pack(side="left", padx=(10, 0))
-        items_frame = ttk.LabelFrame(pxe_menu_frame, text="启动菜单项定义", padding=5)
+        ttk.Checkbutton(timeout_frame, text="随机超时", variable=self.settings_vars[randomize_key]).pack(side="left", padx=(10, 0))
+        
+        items_frame = ttk.LabelFrame(frame, text="菜单项定义 (格式: 文本, 文件, 类型, IP)", padding=5)
         items_frame.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(10,5))
-        menu_items_text = scrolledtext.ScrolledText(items_frame, wrap=tk.WORD, height=10, width=60)
-        menu_items_text.pack(fill="both", expand=True); menu_items_text.insert(tk.END, SETTINGS.get(items_key, ''))
-        self.settings_vars[items_key + '_widget'] = menu_items_text
-        ttk.Label(pxe_menu_frame, text="格式: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP", justify=tk.LEFT, foreground='grey').grid(row=3, column=0, columnspan=2, sticky='w', pady=(5,0))
+        widget = scrolledtext.ScrolledText(items_frame, wrap=tk.WORD, height=10, width=60); widget.pack(fill="both", expand=True)
+        widget.insert(tk.END, SETTINGS.get(items_key, '')); self.settings_vars[items_key + '_widget'] = widget
 
     def toggle_widget_state(self, widgets, state):
-        for widget in widgets:
-            if isinstance(widget, (scrolledtext.ScrolledText, tk.Text)): widget.config(state=state)
-            else:
-                try: widget.config(state=state)
-                except tk.TclError: pass
+        for w in widgets:
+            try: w.config(state=state)
+            except tk.TclError: pass
     
     def toggle_dhcp_fields(self, *args):
-        is_dhcp_mode = self.settings_vars['dhcp_mode'].get() == 'dhcp'
-        state = 'normal' if is_dhcp_mode else 'disabled'
+        state = 'normal' if self.settings_vars['dhcp_mode'].get() == 'dhcp' else 'disabled'
         self.toggle_widget_state(self.dhcp_settings_frame.winfo_children(), state)
 
     def toggle_dhcp_controls(self, *args):
-        is_enabled = self.settings_vars['dhcp_enabled'].get()
-        state = 'normal' if is_enabled else 'disabled'
-        widgets_to_toggle = [self.dhcp_mode_label, self.dhcp_radio, self.proxy_radio, self.dhcp_settings_frame]
-        self.toggle_widget_state(widgets_to_toggle, state)
-        if is_enabled: self.toggle_dhcp_fields()
+        state = 'normal' if self.settings_vars['dhcp_enabled'].get() else 'disabled'
+        self.toggle_widget_state([self.dhcp_mode_label, self.dhcp_radio, self.proxy_radio, self.dhcp_settings_frame], state)
+        if self.settings_vars['dhcp_enabled'].get(): self.toggle_dhcp_fields()
         else: self.toggle_widget_state(self.dhcp_settings_frame.winfo_children(), 'disabled')
 
     def save_and_close(self):
         if self._ip_update_job is not None:
-            self.after_cancel(self._ip_update_job)
-            self._ip_update_job = None
-
+            self.after_cancel(self._ip_update_job); self._ip_update_job = None
         temp_settings = {}
         for key, var in self.settings_vars.items():
             if key.endswith('_widget'):
-                widget = var; base_key = key.replace('_widget', '')
-                temp_settings[base_key] = widget.get("1.0", tk.END).strip()
+                temp_settings[key.replace('_widget', '')] = var.get("1.0", tk.END).strip()
             else:
                 try:
                     val = var.get()
                     if key == 'listen_ip' and val == '0.0.0.0 (所有网卡)': val = '0.0.0.0'
                     temp_settings[key] = val
-                except (tk.TclError, ValueError): temp_settings[key] = 0 if isinstance(var, tk.IntVar) else ""
+                except (tk.TclError, ValueError): pass
         SETTINGS.update(temp_settings); save_config_to_ini(); self.destroy()
 
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("NBPXE 服务器 20250914")
+        self.root.title("NBPXE 服务器 20250912")
         self.root.geometry("800x600")
-        main_frame = ttk.Frame(root, padding="10")
-        main_frame.pack(fill="both", expand=True)
-        status_frame = ttk.LabelFrame(main_frame, text="服务状态", padding="10")
-        status_frame.pack(fill="x", pady=5)
+        main_frame = ttk.Frame(root, padding="10"); main_frame.pack(fill="both", expand=True)
+        status_frame = ttk.LabelFrame(main_frame, text="服务状态", padding="10"); status_frame.pack(fill="x", pady=5)
         self.create_status_widgets(status_frame)
-        paned_window = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
-        paned_window.pack(fill="both", expand=True, pady=5)
-        client_list_frame = ttk.LabelFrame(paned_window, text="客户端列表", padding="10")
+        paned = ttk.PanedWindow(main_frame, orient=tk.VERTICAL); paned.pack(fill="both", expand=True, pady=5)
+        
+        client_frame = ttk.LabelFrame(paned, text="客户端列表", padding="10")
         global client_manager
-        client_manager = ClientManager(client_list_frame, log_message, settings=SETTINGS) # Pass settings
+        client_manager = ClientManager(client_frame, log_message, SETTINGS)
         client_manager.pack(fill="both", expand=True)
-        log_frame = ttk.LabelFrame(paned_window, text="实时日志", padding="10")
+        
+        log_frame = ttk.LabelFrame(paned, text="实时日志", padding="10")
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='disabled', height=5)
         self.log_text.pack(fill="both", expand=True)
         self.log_text.tag_config('warning', foreground='orange', font=('Helvetica', 9, 'bold'))
         self.log_text.tag_config('error', foreground='red', font=('Helvetica', 9, 'bold'))
         self.log_text.tag_config('debug', foreground='grey')
-        paned_window.add(client_list_frame, weight=3)
-        paned_window.add(log_frame, weight=1)
-        control_frame = ttk.Frame(main_frame, padding="5")
-        control_frame.pack(fill="x")
+        
+        paned.add(client_frame, weight=3); paned.add(log_frame, weight=1)
+        
+        control_frame = ttk.Frame(main_frame, padding="5"); control_frame.pack(fill="x")
         self.create_control_widgets(control_frame)
+        
         self.process_log_queue()
         self.update_status_display()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -1483,27 +1323,25 @@ class NBpxeApp:
             self.status_labels[service].grid(row=0, column=i*2+1, sticky="w", padx=(0, 20))
     
     def create_control_widgets(self, parent):
-        ttk.Button(parent, text="启动 / 重启服务", command=start_services).pack(side="left", padx=5, pady=5)
-        ttk.Button(parent, text="停止所有服务", command=stop_services).pack(side="left", padx=5, pady=5)
-        ttk.Button(parent, text="修改配置", command=lambda: ConfigWindow(self.root)).pack(side="left", padx=5, pady=5)
-        ttk.Button(parent, text="重置配置文件", command=self.reset_ini_file).pack(side="left", padx=(15, 5), pady=5)
-        ttk.Button(parent, text="退出程序", command=self.on_closing).pack(side="right", padx=5, pady=5)
+        ttk.Button(parent, text="启动/重启服务", command=start_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="停止服务", command=stop_services).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="配置", command=lambda: ConfigWindow(self.root)).pack(side="left", padx=5, pady=5)
+        ttk.Button(parent, text="重置配置", command=self.reset_ini_file).pack(side="left", padx=(15, 5), pady=5)
+        ttk.Button(parent, text="退出", command=self.on_closing).pack(side="right", padx=5, pady=5)
 
     def reset_ini_file(self):
-        if messagebox.askyesno("重置配置?", f"您确定要删除配置文件 '{INI_FILENAME}' 吗?\n\n程序将在操作后关闭，请您手动重启以便生成新的默认配置。"):
+        if messagebox.askyesno("重置配置?", f"确定要删除 '{INI_FILENAME}' 吗?\n程序将关闭，请手动重启以生成新配置。"):
             stop_services()
             try:
-                if os.path.exists(INI_FILENAME):
-                    os.remove(INI_FILENAME)
-                messagebox.showinfo("重置成功", f"配置文件 '{INI_FILENAME}' 已被删除。\n程序即将关闭，请手动重启。")
+                if os.path.exists(INI_FILENAME): os.remove(INI_FILENAME)
+                messagebox.showinfo("成功", f"'{INI_FILENAME}' 已删除。\n程序即将关闭，请手动重启。")
                 self.on_closing(force=True)
             except Exception as e:
-                messagebox.showerror("删除失败", f"无法删除配置文件 '{INI_FILENAME}': {e}")
+                messagebox.showerror("失败", f"无法删除 '{INI_FILENAME}': {e}")
 
     def on_closing(self, force=False):
-        if force or messagebox.askokcancel("退出", "您确定要退出 NBPXE 服务器吗？"):
-            if client_manager:
-                client_manager.stop_monitoring()
+        if force or messagebox.askokcancel("退出", "确定要退出 NBPXE 服务器吗？"):
+            if client_manager: client_manager.stop_monitoring()
             stop_services()
             self.root.destroy()
     
@@ -1521,27 +1359,22 @@ class NBpxeApp:
             self.root.after(100, self.process_log_queue)
 
     def update_status_display(self):
-        is_dhcp_running = dhcp_thread and dhcp_thread.is_alive()
-        is_proxy_running = proxy_thread and proxy_thread.is_alive()
+        is_dhcp = dhcp_thread and dhcp_thread.is_alive()
+        is_proxy = proxy_thread and proxy_thread.is_alive()
         if SETTINGS.get('dhcp_enabled'):
-            if is_dhcp_running and is_proxy_running:
-                mode = SETTINGS.get('dhcp_mode', 'proxy').upper()
-                self.status_labels["DHCP"].config(text=f"● 运行中 ({mode})", foreground="green")
+            if is_dhcp and is_proxy: self.status_labels["DHCP"].config(text=f"● 运行中 ({SETTINGS.get('dhcp_mode').upper()})", foreground="green")
             else: self.status_labels["DHCP"].config(text="■ 未启动", foreground="orange")
         else: self.status_labels["DHCP"].config(text="■ 已禁用", foreground="grey")
-        is_tftp_running = tftp_thread and tftp_thread.is_alive()
-        if SETTINGS.get('tftp_enabled'):
-            text, color = ("● 运行中", "green") if is_tftp_running else ("■ 未启动", "orange")
-            self.status_labels["TFTP"].config(text=text, foreground=color)
-        else: self.status_labels["TFTP"].config(text="■ 已禁用", foreground="grey")
-        is_http_running = http_thread and http_thread.is_alive()
-        if SETTINGS.get('http_enabled'):
-            text, color = ("● 运行中", "green") if is_http_running else ("■ 未启动", "orange")
-            self.status_labels["HTTP"].config(text=text, foreground=color)
-        else: self.status_labels["HTTP"].config(text="■ 已禁用", foreground="grey")
+        
+        for name, thread in [("TFTP", tftp_thread), ("HTTP", http_thread)]:
+            is_running = thread and thread.is_alive()
+            if SETTINGS.get(f'{name.lower()}_enabled'):
+                text, color = ("● 运行中", "green") if is_running else ("■ 未启动", "orange")
+                self.status_labels[name].config(text=text, foreground=color)
+            else: self.status_labels[name].config(text="■ 已禁用", foreground="grey")
+
         if SETTINGS.get('smb_enabled'):
-            if is_smb_share_active(SETTINGS.get('smb_share_name')):
-                self.status_labels["SMB"].config(text="● 共享中", foreground="green")
+            if is_smb_share_active(SETTINGS.get('smb_share_name')): self.status_labels["SMB"].config(text="● 共享中", foreground="green")
             else: self.status_labels["SMB"].config(text="■ 未共享", foreground="orange")
         else: self.status_labels["SMB"].config(text="■ 已禁用", foreground="grey")
         self.root.after(1000, self.update_status_display)
