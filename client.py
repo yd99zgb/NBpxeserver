@@ -672,16 +672,29 @@ class ClientManager:
             if not (event.state & 0x0004) and not (event.state & 0x0001): self.tree.selection_set(iid)
         selection_count, has_any_clients = len(self.tree.selection()), bool(self.tree.get_children())
         menu, item_state = tk.Menu(self.root, tearoff=0), 'normal' if selection_count > 0 else 'disabled'
+        
         menu.add_command(label="唤醒 (WOL)", command=self._wake_on_lan_command, state=item_state)
         menu.add_separator()
+
+        # --- 这是核心修改部分 ---
+        # 1. 创建一个名为“操作客户机”的子菜单
+        operate_submenu = tk.Menu(menu, tearoff=0)
+
+        # 2. 将所有自定义命令添加到这个子菜单中
         for item in self.menu_config:
             cmd = lambda p=item['path'], a=item['args']: self._execute_custom_command(p, a)
-            menu.add_command(label=item['name'], command=cmd, state=item_state)
+            operate_submenu.add_command(label=item['name'], command=cmd)
         
+        # 3. 将“操作客户机”子菜单作为一个级联项添加到主菜单
+        menu.add_cascade(label="操作客户机", menu=operate_submenu, state=item_state)
+        menu.add_command(label="为文件制作BT种子...", command=self._create_torrent_command, state='normal')
+
+        # --- 修改结束 ---
+        menu.add_command(label="配置操作菜单...", command=self._open_menu_config_window, state='normal')
+
         # vvvvvvv [修改] 修改以下代码块 vvvvvvv
         if self.menu_config: menu.add_separator()
         menu.add_command(label="iPXEFM管理", command=self._open_ipxefm_manager, state='normal')
-        menu.add_command(label="为文件制作BT种子...", command=self._create_torrent_command, state='normal')
         menu.add_separator()
         # ^^^^^^^ [修改] 修改以上代码块 ^^^^^^^
         
@@ -692,11 +705,9 @@ class ClientManager:
         menu.add_separator()
         delete_label = f"删除选中的客户机 ({selection_count})" if selection_count > 1 else "删除这台客户机"
         menu.add_command(label=delete_label, command=self._delete_selected_client, state=item_state)
-        menu.add_command(label="配置菜单...", command=self._open_menu_config_window, state='normal')
         menu.add_separator()
         menu.add_command(label="清空全部客户机", command=self._clear_all_clients, state='normal' if has_any_clients else 'disabled')
         menu.post(event.x_root, event.y_root)
-
     # vvvvvvv [新] 在 ClientManager 类中增加这个完整的新方法 vvvvvvv
     def _create_torrent_command(self):
         """处理“制作torrent种子”菜单命令的逻辑。"""
