@@ -648,7 +648,7 @@ class ClientManager:
         # vvvvvvv [修改] 修改以下代码块 vvvvvvv
         if self.menu_config: menu.add_separator()
         menu.add_command(label="iPXEFM管理", command=self._open_ipxefm_manager, state='normal')
-        menu.add_command(label="为文件制作种子...", command=self._create_torrent_command, state='normal')
+        menu.add_command(label="为文件制作BT种子...", command=self._create_torrent_command, state='normal')
         menu.add_separator()
         # ^^^^^^^ [修改] 修改以上代码块 ^^^^^^^
         
@@ -680,7 +680,7 @@ class ClientManager:
         # 2. 弹出文件选择对话框，让用户选择文件
         http_root_abs = os.path.abspath(http_root)
         filepath = filedialog.askopenfilename(
-            title="请选择一个文件以制作种子 (该文件必须位于HTTP根目录内)",
+            title="请选择一个文件以制作种子 (该文件必须位于HTTP根目录内,可以重命名为bt.torrent直接下发)",
             initialdir=http_root_abs
         )
         if not filepath:
