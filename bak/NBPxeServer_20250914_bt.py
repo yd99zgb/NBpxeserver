@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import dynamic # <--- [新] 增加此行
+
 import socket
 import struct
 import sys
@@ -21,7 +21,6 @@ from collections import deque
 # --- GUI specific imports ---
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
-from urllib.parse import urlparse, parse_qs # <--- [新] 在这里或附近添加此行
 
 import option as dhcp_option_handler
 from option import EXAMPLE_OPTIONS
@@ -256,8 +255,6 @@ Boot from Local Disk, , 0000, 0.0.0.0
         'prompt': 'Press F8 for iPXE Boot Menu ...',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (iPXEFM_Menu), ipxeboot.txt, 8001, %tftpserver%
-newbeeplus.wim, http://${{pxebs/next-server}}/dynamic.ipxe?bootfile=/newbeeplus.wim, 8005, %tftpserver%
-newbeeplus.iso, http://${{pxebs/next-server}}/dynamic.ipxe?bootfile=/newbeeplus.iso, 8006, %tftpserver%
 netboot.xyz, https://boot.netboot.xyz, 8002, %tftpserver%
 GRUB4DOS FOR UEFI, g4e.efi, 8003, %tftpserver%
 GRUBFM, grubfmx64.efi, 8004, %tftpserver%
@@ -958,61 +955,6 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
-        # --- [核心修改] ---
-        # 检查请求是否是针对动态脚本端点
-        # (在 do_GET 方法内部)
-        if self.path.startswith('/dynamic.ipxe'):
-            try:
-                parsed_path = urlparse(self.path)
-                params = parse_qs(parsed_path.query)
-                client_ip = self.client_address[0]
-                
-                # [核心修改] 调用新的主函数，直接传递整个参数字典
-                script_content = dynamic.generate_dynamic_script(
-                    params=params,
-                    client_ip=client_ip
-                )
-                
-                encoded_script = script_content.encode('utf-8')
-                self.send_response(200)
-                self.send_header("Content-type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(encoded_script)))
-                self.end_headers()
-                self.wfile.write(encoded_script)
-
-            except Exception as e:
-                # ... (错误处理部分保持不变) ...
-                log_message(f"HTTP: [Dynamic Script] 生成脚本时出错: {e}", "ERROR")
-                # 如果出错，发送一个简单的错误响应
-                error_message = b"#!ipxe\necho Error generating dynamic script on server.\nsanboot --no-describe --drive 0x80\n"
-                self.send_response(500)
-                self.send_header("Content-type", "text/plain")
-                self.send_header("Content-Length", str(len(error_message)))
-                self.end_headers()
-                self.wfile.write(error_message)
-            
-            # 处理完毕，直接返回，不再执行后续的文件查找逻辑
-            return
-        # --- [修改结束] ---
-
-        # 如果不是动态脚本请求，则执行原来的文件服务逻辑
-        fpath = self.translate_path(self.path)
-
-        if os.path.isdir(fpath):
-            log_message(f"HTTP: [目录浏览] 客户端 {self.client_address[0]} 正在浏览 '{self.path}'")
-            super().do_GET()
-            return
-
-        if not os.path.isfile(fpath):
-            self.send_error(404, "File not found")
-            return
-
-        filename = os.path.basename(fpath)
-        client_ip = self.client_address[0]
-        if self.client_manager:
-            self.client_manager.handle_file_transfer_start(client_ip, filename)
-        
-        # ... (原来 do_GET 方法的剩余部分保持不变) ...
         fpath = self.translate_path(self.path)
 
         if os.path.isdir(fpath):
@@ -1186,7 +1128,6 @@ def start_services():
     stop_event = threading.Event()
     log_message("--- 正在启动所有已启用的服务 ---")
     current_settings = SETTINGS.copy()
-    dynamic.initialize_dynamic_scripting(current_settings)
     manage_smb_share(current_settings, start=True)
     if current_settings['dhcp_enabled']:
         dhcp_thread = threading.Thread(target=run_dhcp_server, args=(current_settings, stop_event), daemon=True); dhcp_thread.start()
@@ -1532,9 +1473,6 @@ class NBpxeApp:
         self.process_log_queue()
         self.update_status_display()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-             
-       
-       
     
     def create_status_widgets(self, parent):
         self.status_labels = {}
