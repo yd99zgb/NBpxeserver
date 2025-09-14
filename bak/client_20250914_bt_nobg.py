@@ -355,23 +355,11 @@ class ClientManager:
         columns = ('#', 'firmware', 'name', 'ip', 'mac', 'status', 'disk_health', 'net_speed')
         self.tree = ttk.Treeview(self.frame, columns=columns, show='headings', selectmode='extended')
         self._setup_treeview_columns()
-        # vvvvvv 替换为这个全新的样式定义块 vvvvvv
-        # 为每一种最终状态定义一个独立的样式，避免标签冲突
-        
-        # 1. 离线状态
-        self.tree.tag_configure('offline_status', foreground='#dddddd', font=('Helvetica', 9, 'normal'))
-        
-        # 2. 中间状态 (如PXE、启动中等)
+        self.tree.tag_configure('online_status', background='#e6ffed', font=('Helvetica', 9, 'bold'))
+        self.tree.tag_configure('offline_status', foreground='grey')
         self.tree.tag_configure('intermediate_status', font=('Helvetica', 9, 'bold'))
-        
-        # 3. 所有在线状态 (都带有淡绿色背景)
-        # 3a. 在线 - 健康状态未知或中性 (例如 "Unknown", "N/A")
-        self.tree.tag_configure('online_neutral', background='#e6ffed', font=('Helvetica', 9, 'bold'))
-        # 3b. 在线 - 健康状态良好 (例如 "OK")
-        self.tree.tag_configure('online_health_ok', background='#e6ffed', foreground='green', font=('Helvetica', 9, 'bold'))
-        # 3c. 在线 - 健康状态不佳 (例如 "Bad", "Error")
-        self.tree.tag_configure('online_health_bad', background='#e6ffed', foreground='red', font=('Helvetica', 9, 'bold'))
-# ^^^^^^ 替换结束 ^^^^^^
+        self.tree.tag_configure('health_ok', foreground='green')
+        self.tree.tag_configure('health_bad', foreground='red', font=('Helvetica', 9, 'bold'))
         scrollbar = ttk.Scrollbar(self.frame, orient=tk.VERTICAL, command=self.tree.yview); self.tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
@@ -466,8 +454,6 @@ class ClientManager:
 
             update_data = {}
 
-#  vvvvv 替换为这个新的逻辑块 vvvvv
-
             if is_online:
                 # [最终决定版逻辑]: 状态显示完全依赖于是否存在 last_boot_file 记录
                 last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
@@ -483,16 +469,12 @@ class ClientManager:
                 if online_status_text != current_status or final_ip != current_ip:
                     update_data.update({'status': online_status_text, 'ip': final_ip})
             else:
-                # [核心逻辑修正] 只要客户端当前不是“离线”状态，就将其更新为离线
-                if self.STATUS_MAP['offline'] not in current_status:
+                # 离线逻辑也使用相同的 last_boot_file 判断，以保持显示一致性
+                if "在线" in current_status:
                     last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
                     offline_status_text = f"{self.STATUS_MAP['offline']}" + (f" [{last_boot_file}]" if last_boot_file else "")
-                    
-                    # 仅在需要更新时才加入队列，避免不必要的UI刷新
                     if offline_status_text != current_status:
                         update_data['status'] = offline_status_text
-
-#  ^^^^^ 替换结束 ^^^^^
 
             if update_data:
                 update_data['mac'] = mac_norm
@@ -535,21 +517,7 @@ class ClientManager:
             final_status = data_to_update.get('status', None)
             tags = ()
             if not is_probe_client and final_status:
-                if '离线' in final_status:
-                    tags = ('offline_status',)
-                elif '在线' in final_status:
-                    health = data_to_update.get('disk_health', '').upper()
-                    if health == 'OK':
-                        tags = ('online_health_ok',)
-                    elif health in ['UNKNOWN', 'N/A', '未知']:
-                        tags = ('online_neutral',)
-                    elif health: # 如果健康状态存在但不是OK/Unknown，则视为不佳
-                        tags = ('online_health_bad',)
-                    else: # 如果客户端在线但还没有健康报告
-                        tags = ('online_neutral',)
-                else: # 所有其他状态 (PXE, 传输, 启动中...)
-                    tags = ('intermediate_status',)
-            # ^^^^^^ 替换结束 ^^^^^^
+                tags = ('online_status',) if '在线' in final_status else ('offline_status',) if '离线' in final_status else ('intermediate_status',)
             health = data_to_update.get('disk_health')
             if health:
                 tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
@@ -631,8 +599,7 @@ class ClientManager:
                 # =======================[ 修复结束 ]=======================
 
                 tags = ('online_status',) if '在线' in status else ('offline_status',) if '离线' in status else ('intermediate_status',)
-                # 修改后的代码
-                tags += ('health_ok',) if health.upper() == 'OK' else ('health_neutral',) if health.upper() in ['UNKNOWN', 'N/A', '未知'] else ('health_bad',)
+                tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
                 values = (seq, client_data.get('firmware', '未知'), f"{self.CLIENT_SYMBOL} {hostname}".strip(), ip, mac_norm, status, health, client_data.get('net_speed', '未知'))
                 iid = self.tree.insert('', 0, values=values, tags=tags); self.mac_to_iid[mac_norm] = iid
             self.client_counter = max_seq
