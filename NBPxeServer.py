@@ -231,7 +231,7 @@ def create_default_ini():
     config['BootFiles'] = {'bios': 'ipxe.bios', 'uefi32': 'ipxe32.efi', 'uefi64': 'ipxe.efi', 'ipxe': 'ipxeboot.txt'}
     config['SMB'] = {'enabled': 'false', 'share_name': 'pxe', 'permissions': 'read'}
     config['PXEMenuBIOS'] = {
-        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
+        'enabled': 'true', 'timeout': '6', 'randomize_timeout': 'false',
         'prompt': 'Press F8 for BIOS Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (BIOS), ipxe.bios, 8000, %tftpserver%
@@ -239,7 +239,7 @@ Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
     config['PXEMenuUEFI'] = {
-        'enabled': 'true', 'timeout': '10', 'randomize_timeout': 'false',
+        'enabled': 'true', 'timeout': '6', 'randomize_timeout': 'false',
         'prompt': 'Press F8 for UEFI Boot Menu',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (UEFI), ipxe.efi, 8002, %tftpserver%
@@ -251,13 +251,13 @@ Boot from Local Disk, , 0000, 0.0.0.0
     }
     config['PXEMenuIPXE'] = {
         'enabled': 'true', 
-        'timeout': '2', 
+        'timeout': '6', 
         'randomize_timeout': 'false',
         'prompt': 'Press F8 for iPXE Boot Menu ...',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (iPXEFM_Menu), ipxeboot.txt, 8001, %tftpserver%
-newbeeplus.wim, http://${{pxebs/next-server}}/dynamic.ipxe?bootfile=/newbeeplus.wim, 8005, %tftpserver%
-newbeeplus.iso, http://${{pxebs/next-server}}/dynamic.ipxe?bootfile=/newbeeplus.iso, 8006, %tftpserver%
+newbeeplus.wim, %dynamicboot%=/newbeeplus.wim, 8005, %tftpserver%
+newbeeplus.iso, %dynamicboot%=/newbeeplus.iso, 8006, %tftpserver%
 netboot.xyz, https://boot.netboot.xyz, 8002, %tftpserver%
 GRUB4DOS FOR UEFI, g4e.efi, 8003, %tftpserver%
 GRUBFM, grubfmx64.efi, 8004, %tftpserver%
@@ -501,6 +501,13 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                 try:
                     if int(parts[2], 16) == selected_item_type:
                         boot_file = parts[1]
+
+                        # --- [修正] 处理 %dynamic% 占位符 (已修正缩进) ---
+                        if '%dynamicboot%' in boot_file:
+                            # ${...} 是 iPXE 变量，会原样发送给客户端
+                            replacement_string = 'http://${pxebs/next-server}/dynamic.ipxe?bootfile'
+                            boot_file = boot_file.replace('%dynamicboot%', replacement_string)
+                        
                         server_ip_str = parts[3]
                         if '%tftpserver%' in server_ip_str.lower():
                             final_server_ip = cfg['server_ip']
@@ -509,7 +516,8 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                         else:
                             final_server_ip = cfg['server_ip']
                         break
-                except ValueError: continue
+                except ValueError: 
+                    continue
         log_message(f"DHCP: 客户端 {client_mac} 已选择菜单项 {selected_item_type:04x}, 提供文件: '{boot_file or '本地启动'}'")
         option43 = bytes([71, 4]) + selected_item_type.to_bytes(2, 'big') + (0).to_bytes(2, 'big') + b'\xff'
     
@@ -1505,7 +1513,7 @@ class ConfigWindow(tk.Toplevel):
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("NBPXE 服务器 20250914")
+        self.root.title("NBPXE 服务器 20250915")
         self.root.geometry("800x600")
         main_frame = ttk.Frame(root, padding="10")
         main_frame.pack(fill="both", expand=True)

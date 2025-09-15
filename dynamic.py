@@ -89,6 +89,30 @@ sleep 5
 chain ${{booturl}}/dynamic.ipxe
 """
 
+def _generate_efi_boot_script(bootfile_path: str, http_uri: str) -> str:
+    """生成 EFI 文件的 chainload 启动脚本，并附加指定参数。"""
+    
+    if not bootfile_path.startswith('/'):
+        bootfile_path = '/' + bootfile_path
+        
+    return f"""#!ipxe
+
+# --- Dynamic EFI Boot Script ---
+# Booting: {bootfile_path}
+
+set booturl {http_uri}
+set bootfile {bootfile_path}
+
+echo Booting EFI Application...
+# 附加 proxydhcp 参数并 chain aunching EFI application with proxydhcp parameter...
+chain ${{booturl}}${{bootfile}} proxydhcp=${{pxebs/next-server}} || goto failed
+
+:failed
+echo Boot failed! Returning to menu in 5 seconds...
+sleep 5
+chain ${{booturl}}/dynamic.ipxe
+"""
+
 def _generate_mac_based_menu(params: dict) -> str:
     """
     当没有 bootfile 参数时，执行原始的、基于 MAC 地址的菜单逻辑。
@@ -157,6 +181,8 @@ def generate_dynamic_script(params: dict, client_ip: str) -> str:
             return _generate_wim_boot_script(bootfile, http_uri)
         elif bootfile.lower().endswith('.iso'):
             return _generate_iso_boot_script(bootfile, http_uri)
+        elif bootfile.lower().endswith('.efi'):
+            return _generate_efi_boot_script(bootfile, http_uri)
         else:
             return f"#!ipxe\necho Unsupported file type: {bootfile}\nsleep 5\nexit"
     

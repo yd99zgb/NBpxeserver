@@ -359,7 +359,7 @@ class ClientManager:
         # 为每一种最终状态定义一个独立的样式，避免标签冲突
         
         # 1. 离线状态
-        self.tree.tag_configure('offline_status', foreground='#dddddd', font=('Helvetica', 9, 'normal'))
+        self.tree.tag_configure('offline_status', foreground='#aaaaaa', font=('Helvetica', 9, 'normal'))
         
         # 2. 中间状态 (如PXE、启动中等)
         self.tree.tag_configure('intermediate_status', font=('Helvetica', 9, 'bold'))
