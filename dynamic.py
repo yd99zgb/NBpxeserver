@@ -80,9 +80,14 @@ def _generate_iso_boot_script(bootfile_path: str, http_uri: str) -> str:
 set booturl {http_uri}
 set bootfile {bootfile_path}
 
-echo Booting ISO via SANBOOT...
-sanboot --no-describe ${{booturl}}${{bootfile}} || goto failed
-
+echo Booting ISO via imgboot...
+goto ${{platform}}
+:efi
+initrd -n boot.iso ${{booturl}}${{bootfile}} ||
+chain ${{booturl}}/app/efi/imgboot.efi || goto failed
+:pcbios
+kernel ${{booturl}}app/bios/memdisk iso raw ||
+initrd ${{booturl}}${{bootfile}} | goto failed
 :failed
 echo Boot failed! Returning to menu in 5 seconds...
 sleep 5
