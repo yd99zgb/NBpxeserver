@@ -86,7 +86,7 @@ goto ${{platform}}
 initrd -n boot.iso ${{booturl}}${{bootfile}} ||
 chain ${{booturl}}/app/efi/imgboot.efi || goto failed
 :pcbios
-kernel ${{booturl}}app/bios/memdisk iso raw ||
+kernel ${{booturl}}app/pcbios/memdisk iso raw ||
 initrd ${{booturl}}${{bootfile}} | goto failed
 :failed
 echo Boot failed! Returning to menu in 5 seconds...
