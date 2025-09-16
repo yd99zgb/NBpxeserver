@@ -6,30 +6,31 @@ from urllib.parse import unquote
 
 # 模块配置，由主程序初始化
 _SERVER_CONFIG = {}
-# [新] 增加一个全局变量来持有 ClientManager 的实例
-_CLIENT_MANAGER = None
 
-def initialize_dynamic_scripting(settings: dict, client_manager_instance=None):
-    """
-    从主服务器接收配置和 ClientManager 实例并初始化本模块。
-    """
-    global _SERVER_CONFIG, _CLIENT_MANAGER
+# 模拟客户端数据库 (用于回退逻辑)
+KNOWN_CLIENTS = {
+    '08-00-27-1A-2B-3C': {'hostname': 'WebServer-01', 'assigned_os': 'Boot/wim/WinPE_Admin.wim'},
+    '00-50-56-A1-B2-C3': {'hostname': 'GraphicsWorkstation', 'assigned_os': 'Boot/iso/ubuntu-desktop.iso'},
+}
+
+def initialize_dynamic_scripting(settings: dict):
+    """从主服务器接收配置并初始化本模块。"""
+    global _SERVER_CONFIG
     _SERVER_CONFIG['server_ip'] = settings.get('server_ip', '127.0.0.1')
     _SERVER_CONFIG['http_port'] = settings.get('http_port', 80)
     _SERVER_CONFIG['http_uri'] = f"http://{_SERVER_CONFIG['server_ip']}:{_SERVER_CONFIG['http_port']}"
-    _CLIENT_MANAGER = client_manager_instance
-    
-    log_msg = f"Dynamic scripting module updated. HTTP URI: {_SERVER_CONFIG['http_uri']}"
-    if _CLIENT_MANAGER:
-        log_msg += " | ClientManager instance linked."
-    print(log_msg)
-
+    print(f"Dynamic scripting module updated. HTTP URI: {_SERVER_CONFIG['http_uri']}")
 
 def _generate_wim_boot_script(bootfile_path: str, http_uri: str) -> str:
     """根据用户提供的模板生成 WIM 文件的启动脚本。"""
+    
+    # 确保 bootfile 路径以 / 开头，符合 URL 规范
     if not bootfile_path.startswith('/'):
         bootfile_path = '/' + bootfile_path
 
+    # 使用 f-string 和三引号来精确构建多行 iPXE 脚本
+    # 注意：iPXE 变量 ${...} 在 f-string 中需要写为 ${{...}} 来转义
+    # 但由于我们的Python变量名和iPXE变量名不冲突，可以直接写
     return f"""#!ipxe
 
 # --- Dynamic WIM Boot Script ---
@@ -67,6 +68,7 @@ chain http://${{booturl}}/dynamic.ipxe
 
 def _generate_iso_boot_script(bootfile_path: str, http_uri: str) -> str:
     """生成 ISO 文件的 sanboot 启动脚本。"""
+    
     if not bootfile_path.startswith('/'):
         bootfile_path = '/' + bootfile_path
         
@@ -84,10 +86,8 @@ goto ${{platform}}
 initrd -n boot.iso ${{booturl}}${{bootfile}} ||
 chain ${{booturl}}/app/efi/imgboot.efi || goto failed
 :pcbios
-kernel ${{booturl}}/app/pcbios/memdisk iso raw ||
-initrd ${{booturl}}${{bootfile}} || goto failed
-boot
-
+kernel ${{booturl}}app/pcbios/memdisk iso raw ||
+initrd ${{booturl}}${{bootfile}} | goto failed
 :failed
 echo Boot failed! Returning to menu in 5 seconds...
 sleep 5
@@ -96,6 +96,7 @@ chain ${{booturl}}/dynamic.ipxe
 
 def _generate_efi_boot_script(bootfile_path: str, http_uri: str) -> str:
     """生成 EFI 文件的 chainload 启动脚本，并附加指定参数。"""
+    
     if not bootfile_path.startswith('/'):
         bootfile_path = '/' + bootfile_path
         
@@ -117,93 +118,70 @@ sleep 5
 chain ${{booturl}}/dynamic.ipxe
 """
 
-def _generate_whoami_menu(http_uri: str) -> str:
+def _generate_mac_based_menu(params: dict) -> str:
     """
-    [新] 生成一个菜单，列出所有待分配MAC地址的客户端。
+    当没有 bootfile 参数时，执行原始的、基于 MAC 地址的菜单逻辑。
     """
-    if not _CLIENT_MANAGER:
-        return "#!ipxe\necho Server Error: ClientManager not initialized.\nshell"
-
-    unassigned_clients = _CLIENT_MANAGER.get_unassigned_clients()
-
-    if not unassigned_clients:
-        return "#!ipxe\necho No unassigned clients found in the list to claim.\necho Booting from local disk...\nsleep 3\nsanboot --no-describe --drive 0x80"
+    mac = params.get('mac', ['unknown'])[0].upper().replace(':', '-')
+    http_uri = _SERVER_CONFIG.get('http_uri', 'http://127.0.0.1')
+    client_info = KNOWN_CLIENTS.get(mac)
     
-    script = [
+    script_lines = [
         "#!ipxe",
         "",
-        "menu Please identify this machine",
+        f"set http_uri {http_uri}",
+        "set menu-timeout 5000",
+        ""
     ]
     
-    for client in unassigned_clients:
-        script.append(f"item {client['ip']} {client['name']} --- {client['ip']}")
-    
-    script.extend([
-        "",
-        "choose --timeout 30000 selected || exit",
-        f"chain {http_uri}/dynamic.ipxe?myip=${{selected}}&mymac=${{net0/mac}}",
-        "exit"
-    ])
-    
-    return "\n".join(script)
-
-def _perform_mac_binding(ip: str, mac: str) -> str:
-    """
-    [新] 执行MAC地址和IP的绑定操作。
-    """
-    if not _CLIENT_MANAGER:
-        return "#!ipxe\necho Server Error: ClientManager not initialized.\nshell"
-
-    mac_norm = mac.upper().replace(':', '-')
-    success = _CLIENT_MANAGER.assign_mac_to_ip(ip, mac_norm)
-
-    if success:
-        return (
-            "#!ipxe\n"
-            f"echo Successfully bound this machine ({mac_norm}) to IP {ip}.\n"
-            "echo The server configuration has been updated.\n"
-            "echo Rebooting in 5 seconds to apply changes...\n"
-            "sleep 5\n"
-            "reboot"
-        )
+    if client_info:
+        # 已知客户端逻辑...
+        hostname = client_info['hostname']
+        script_lines.extend([
+            f"menu Welcome, {hostname} ({mac})",
+            "item --gap -- Assigned Task",
+            f"item osboot Boot {os.path.basename(client_info['assigned_os'])}",
+            "item localboot Boot from Local Disk",
+            "choose --timeout ${menu-timeout} selected || goto localboot",
+            "goto ${selected}",
+            ":osboot",
+            f"chain ${{http_uri}}/dynamic.ipxe?bootfile={client_info['assigned_os']}" # 巧妙地调用自己！
+        ])
     else:
-        return (
-            "#!ipxe\n"
-            f"echo ERROR: Failed to bind MAC {mac_norm} to IP {ip}.\n"
-            "echo The IP may no longer be available for assignment.\n"
-            "echo Please check server logs and restart.\n"
-            "echo Halting in 10 seconds.\n"
-            "sleep 10\n"
-            "shell"
-        )
+        # 未知客户端逻辑...
+        script_lines.extend([
+            f"menu General Boot Menu for {mac}",
+            "item winpe Boot Windows PE (General Purpose)",
+            "item localboot Boot from Local Disk (Default)",
+            "choose --timeout ${menu-timeout} selected || goto localboot",
+            "goto ${selected}",
+            ":winpe",
+            "chain ${http_uri}/dynamic.ipxe?bootfile=/Boot/wim/WinPE_common.wim" # 调用自己
+        ])
+        
+    script_lines.extend(["", ":localboot", "sanboot --no-describe --drive 0x80 || exit"])
+    return "\n".join(script_lines)
+
 
 def generate_dynamic_script(params: dict, client_ip: str) -> str:
     """
     主生成函数。根据 URL 参数决定生成哪种脚本。
+    :param params: 从 URL 查询字符串解析出的参数字典。
+    :param client_ip: 发起请求的客户端 IP 地址。
+    :return: 完整的 iPXE 脚本字符串。
     """
     http_uri = _SERVER_CONFIG.get('http_uri', 'http://127.0.0.1')
     
-    # --- [全新路由逻辑] ---
-    
-    # 1. 优先处理绑定请求
-    if 'myip' in params and 'mymac' in params:
-        ip_to_bind = params['myip'][0]
-        mac_to_bind = params['mymac'][0]
-        print(f"Dynamic script request to bind MAC {mac_to_bind} to IP {ip_to_bind}")
-        return _perform_mac_binding(ip_to_bind, mac_to_bind)
-
-    # 2. 其次处理 bootfile 参数
+    # 优先检查 'bootfile' 参数
+    # parse_qs 的结果是列表，所以我们取第一个元素
     bootfile = params.get('bootfile', [None])[0]
+
     if bootfile:
+        # 对文件名进行 URL 解码，以处理像 %20 (空格) 这样的字符
         bootfile = unquote(bootfile)
         
-        # 2a. 处理 whoami 请求
-        if bootfile.lower() == 'whoami':
-            print(f"Dynamic script request for client identification ('whoami') from {client_ip}")
-            return _generate_whoami_menu(http_uri)
-        
-        # 2b. 处理常规文件引导
         print(f"Dynamic script request for direct boot: '{bootfile}' from {client_ip}")
+
         if bootfile.lower().endswith('.wim'):
             return _generate_wim_boot_script(bootfile, http_uri)
         elif bootfile.lower().endswith('.iso'):
@@ -213,5 +191,8 @@ def generate_dynamic_script(params: dict, client_ip: str) -> str:
         else:
             return f"#!ipxe\necho Unsupported file type: {bootfile}\nsleep 5\nexit"
     
-    # 3. 如果以上都不是，返回一个错误或默认行为
-    return "#!ipxe\necho Invalid dynamic script request.\nsleep 5\nsanboot --no-describe --drive 0x80"
+    # 如果没有 'bootfile' 参数，则回退到基于 MAC 的菜单逻辑
+    else:
+        mac = params.get('mac', ['unknown'])[0]
+        print(f"Dynamic script request for menu from MAC: {mac} ({client_ip})")
+        return _generate_mac_based_menu(params)

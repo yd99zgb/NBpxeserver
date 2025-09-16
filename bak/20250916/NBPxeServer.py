@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import dynamic
+import dynamic # <--- [新] 增加此行
 import socket
 import struct
 import sys
@@ -18,15 +18,19 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 
+# --- GUI specific imports ---
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs # <--- [新] 在这里或附近添加此行
 
 import option as dhcp_option_handler
 from option import EXAMPLE_OPTIONS
 from client import ClientManager
 
-# ... (log_message, INI_FILENAME, SETTINGS, get_mac_address, get_all_ips, etc. 保持不变) ...
+# ================================================================= #
+# ======================== 核心服务器逻辑 ========================= #
+# ================================================================= #
+
 log_queue = queue.Queue()
 LOG_FILENAME = 'nbpxe.log'
 # 文件: NBPxeServer.py
@@ -61,7 +65,7 @@ def log_message(message, level='INFO'):
         log_queue.put((message, level))
 
 INI_FILENAME = 'NBpxe.ini'
-config = configparser.ConfigParser(interpolation=None)
+config = configparser.ConfigParser(interpolation=None) # <--- 修改后的行
 SETTINGS = {}
 ARCH_TYPES = {0: 'bios', 6: 'uefi32', 7: 'uefi64', 9: 'uefi64'}
 
@@ -252,12 +256,11 @@ Boot from Local Disk, , 0000, 0.0.0.0
         'prompt': 'Press F8 for iPXE Boot Menu ...',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (iPXEFM_Menu), ipxeboot.txt, 8001, %tftpserver%
-Bind_Client_IP, %dynamicboot%=whoami, 8002, %tftpserver%
-newbeeplus.wim, %dynamicboot%=/newbeeplus.wim, 8003, %tftpserver%
-newbeeplus.iso, %dynamicboot%=/newbeeplus.iso, 8004, %tftpserver%
-netboot.xyz, https://boot.netboot.xyz, 8005, %tftpserver%
-GRUB4DOS FOR UEFI, g4e.efi, 8006, %tftpserver%
-GRUBFM, grubfmx64.efi, 8007, %tftpserver%
+newbeeplus.wim, %dynamicboot%=/newbeeplus.wim, 8005, %tftpserver%
+newbeeplus.iso, %dynamicboot%=/newbeeplus.iso, 8006, %tftpserver%
+netboot.xyz, https://boot.netboot.xyz, 8002, %tftpserver%
+GRUB4DOS FOR UEFI, g4e.efi, 8003, %tftpserver%
+GRUBFM, grubfmx64.efi, 8004, %tftpserver%
 Boot from Local Disk, , 0000, 0.0.0.0
 '''
     }
@@ -401,6 +404,7 @@ def build_pxe_option43_menu(menu_cfg, tftp_server_ip):
     payload += b'\xff'
     return bytes(payload)
 
+# =======================[ 核心修改点: craft_dhcp_response ]=======================
 def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False):
     if len(req_pkt) < 240: return None
     try:
@@ -416,15 +420,20 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     vendor_class = vendor_class_bytes.decode(errors='ignore')
     is_ipxe_client = b'iPXE' in user_class or b'iPXE' in vendor_class_bytes
     
+    # --- 新增日志记录 ---
     if vendor_class:
         log_message(f"DHCP: 客户端 {client_mac} Vendor Class Identifier = '{vendor_class}'")
 
+    # --- 修改: 处理 Windows PE/Setup 客户端 ---
     if 'MSFT 5.0' in vendor_class:
+        # --- 新增日志记录 ---
         log_message(f"DHCP: 客户端 {client_mac} (Windows 获取IP) 请求地址。")
         hostname = opts.get(12, b'').decode(errors='ignore').strip()
         if client_manager:
+            # --- 修改 state_hint ---
             client_manager.handle_dhcp_request(client_mac, assigned_ip, 'get_ip', hostname=hostname)
         
+        # (构建Windows响应包的逻辑保持不变)
         resp_msg_type = 2 if msg_type == 1 else (5 if msg_type == 3 else 0)
         if resp_msg_type == 0: return None
         resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
@@ -442,11 +451,13 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         resp_pkt += b'\xff'
         return bytes(resp_pkt)
 
+    # --- PXE 和 iPXE 客户端处理逻辑 ---
     arch_name = 'bios'
     if 93 in opts and len(opts[93]) >= 2:
         arch_code = struct.unpack('!H', opts[93][:2])[0]
         arch_name = ARCH_TYPES.get(arch_code, 'bios')
     
+    # --- 修改: 初始状态更新 ---
     if client_manager:
         firmware_display = 'UEFI' if 'uefi' in arch_name else 'BIOS'
         initial_state = 'ipxe' if is_ipxe_client else 'pxe'
@@ -480,6 +491,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
             i += 2 + sub_len
 
     if selected_item_type is not None:
+        # --- 修改: 菜单已选择状态 ---
         if client_manager: client_manager.handle_dhcp_request(client_mac, assigned_ip, 'menuselect')
         
         menu_items_str = cfg.get(f'{menu_cfg_key_prefix}_items', '')
@@ -490,7 +502,9 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                     if int(parts[2], 16) == selected_item_type:
                         boot_file = parts[1]
 
+                        # --- [修正] 处理 %dynamic% 占位符 (已修正缩进) ---
                         if '%dynamicboot%' in boot_file:
+                            # ${...} 是 iPXE 变量，会原样发送给客户端
                             replacement_string = 'http://${pxebs/next-server}/dynamic.ipxe?bootfile'
                             boot_file = boot_file.replace('%dynamicboot%', replacement_string)
                         
@@ -518,11 +532,13 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
         option43 = build_pxe_option43_menu(menu_config, cfg['server_ip'])
         log_message(f"DHCP: 为 {client_mac} ({arch_name.upper()}) 提供 '{menu_cfg_key_prefix}' 菜单")
         
+        # --- 修改: 提供菜单状态 ---
         if client_manager:
             menu_state = 'ipxemenu' if is_ipxe_client else 'pxemenu'
             client_manager.handle_dhcp_request(client_mac, assigned_ip, menu_state)
 
     else:
+        # (默认文件逻辑，初始状态已在前面设置，无需再次更新)
         if is_ipxe_client:
             boot_file = cfg.get('bootfile_ipxe', '')
         else:
@@ -531,6 +547,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
                 option43 = b'\x06\x01\x08\xff'
         log_message(f"DHCP: 为 {client_mac} 提供默认文件: '{boot_file}'")
     
+    # (构建响应包的剩余部分保持不变)
     resp_pkt = bytearray(struct.pack('!BBBB', 2, 1, 6, 0)) + xid + struct.pack('!HH', 0, 0x8000)
     resp_pkt += req_pkt[12:16] + socket.inet_aton(assigned_ip)
     final_server_ip_bytes = socket.inet_aton(final_server_ip)
@@ -563,6 +580,7 @@ def craft_dhcp_response(req_pkt, cfg, assigned_ip='0.0.0.0', is_proxy_req=False)
     
     resp_pkt += b'\xff'
     return bytes(resp_pkt)
+# =======================[ 修改结束 ]=======================
 
 dhcp_thread, proxy_thread, tftp_thread, http_thread, dhcp_detector_thread = None, None, None, None, None
 stop_event = threading.Event()
@@ -631,8 +649,7 @@ def detect_other_dhcp_servers(stop_evt):
         if client_manager:
             client_manager.remove_probe_client()
 
-# --- [核心修改] run_dhcp_server ---
-def run_dhcp_server(cfg, stop_evt, client_mgr):
+def run_dhcp_server(cfg, stop_evt):
     mac_to_ip, offered_ips = {}, {}
     ip_pool = deque()
     if cfg['dhcp_mode'] == 'dhcp':
@@ -643,7 +660,8 @@ def run_dhcp_server(cfg, stop_evt, client_mgr):
         except Exception as e:
             log_message(f"DHCP (67): IP池创建失败: {e}", "ERROR"); return
 
-    def get_lease_from_pool(mac):
+    def get_lease(mac):
+        if mac in mac_to_ip: return mac_to_ip[mac]
         if mac in offered_ips and offered_ips[mac]['expires'] > time.time(): return offered_ips[mac]['ip']
         if not ip_pool: log_message("DHCP (67): IP池已耗尽!", "WARNING"); return None
         ip = ip_pool.popleft(); offered_ips[mac] = {'ip': ip, 'expires': time.time() + 60}; return ip
@@ -666,27 +684,35 @@ def run_dhcp_server(cfg, stop_evt, client_mgr):
         try:
             data, addr = sock.recvfrom(1024)
             mac = ":".join(f"{b:02x}" for b in data[28:34])
+            client_ip_from_packet = socket.inet_ntoa(data[12:16])
+            
+            # 保留新版本中有用的逻辑：记录已存在IP的客户端
+            if client_ip_from_packet != '0.0.0.0':
+                with ip_map_lock:
+                    ip_to_mac_map[client_ip_from_packet] = mac
+
             opts = parse_dhcp_options(data)
             msg_type = opts.get(53, b'\x00')[0]
             
             ip_to_assign = '0.0.0.0'
             if cfg['dhcp_mode'] == 'dhcp':
-                # 1. 检查静态绑定
-                static_ip = client_mgr.get_ip_for_mac(mac)
-                if static_ip:
-                    ip_to_assign = static_ip
-                    log_message(f"DHCP: 发现静态绑定: MAC {mac} -> IP {static_ip}", "INFO")
-                else:
-                    # 2. 如果没有静态绑定，执行动态分配逻辑
-                    if msg_type == 1: # DHCPDISCOVER
-                        ip_to_assign = get_lease_from_pool(mac)
-                    elif msg_type == 3: # DHCPREQUEST
-                        req_ip = socket.inet_ntoa(opts[50]) if 50 in opts else None
-                        if req_ip:
-                            ip_to_assign = confirm_lease(mac, req_ip)
+                if msg_type == 1: # DHCPDISCOVER
+                    ip_to_assign = get_lease(mac)
+                elif msg_type == 3: # DHCPREQUEST
+                    # =======================[ 这是关键的修复点 ]=======================
+                    # 始终优先使用Option 50，如果不存在则为None，而不是回退到可能为'0.0.0.0'的ciaddr
+                    req_ip = socket.inet_ntoa(opts[50]) if 50 in opts else None
+                    if req_ip: # 只要从Option 50中成功获取IP，就继续处理
+                        ip_to_assign = confirm_lease(mac, req_ip)
+                    # =======================[ 修复结束 ]=======================
                 
                 if not ip_to_assign: 
                     continue
+
+                # 保留新版本中有用的逻辑：在分配成功后立即更新映射
+                if ip_to_assign and ip_to_assign != '0.0.0.0':
+                    with ip_map_lock:
+                        ip_to_mac_map[ip_to_assign] = mac
             
             response_pkt = craft_dhcp_response(data, cfg, assigned_ip=ip_to_assign)
             if response_pkt: sock.sendto(response_pkt, ('255.255.255.255', 68))
@@ -697,7 +723,6 @@ def run_dhcp_server(cfg, stop_evt, client_mgr):
             
     sock.close(); log_message("DHCP (67): 监听器已停止。")
 
-# ... (run_proxy_listener, tftp, http, smb, a NBpxeApp class 保持不变, 此处省略以节省篇幅) ...
 def run_proxy_listener(cfg, stop_evt):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); sock.settimeout(1.0)
@@ -941,12 +966,16 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
+        # --- [核心修改] ---
+        # 检查请求是否是针对动态脚本端点
+        # (在 do_GET 方法内部)
         if self.path.startswith('/dynamic.ipxe'):
             try:
                 parsed_path = urlparse(self.path)
                 params = parse_qs(parsed_path.query)
                 client_ip = self.client_address[0]
                 
+                # [核心修改] 调用新的主函数，直接传递整个参数字典
                 script_content = dynamic.generate_dynamic_script(
                     params=params,
                     client_ip=client_ip
@@ -960,7 +989,9 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(encoded_script)
 
             except Exception as e:
+                # ... (错误处理部分保持不变) ...
                 log_message(f"HTTP: [Dynamic Script] 生成脚本时出错: {e}", "ERROR")
+                # 如果出错，发送一个简单的错误响应
                 error_message = b"#!ipxe\necho Error generating dynamic script on server.\nsanboot --no-describe --drive 0x80\n"
                 self.send_response(500)
                 self.send_header("Content-type", "text/plain")
@@ -968,8 +999,11 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(error_message)
             
+            # 处理完毕，直接返回，不再执行后续的文件查找逻辑
             return
+        # --- [修改结束] ---
 
+        # 如果不是动态脚本请求，则执行原来的文件服务逻辑
         fpath = self.translate_path(self.path)
 
         if os.path.isdir(fpath):
@@ -986,6 +1020,7 @@ class RangeRequestHandler(http.server.SimpleHTTPRequestHandler):
         if self.client_manager:
             self.client_manager.handle_file_transfer_start(client_ip, filename)
         
+        # ... (原来 do_GET 方法的剩余部分保持不变) ...
         fpath = self.translate_path(self.path)
 
         if os.path.isdir(fpath):
@@ -1153,22 +1188,16 @@ def is_smb_share_active(share_name):
         return share_name in result.stdout
     except (subprocess.CalledProcessError, FileNotFoundError): return False
 
-# --- [核心修改] start_services ---
 def start_services():
     global dhcp_thread, tftp_thread, http_thread, proxy_thread, stop_event, dhcp_detector_thread
     stop_services()
     stop_event = threading.Event()
     log_message("--- 正在启动所有已启用的服务 ---")
     current_settings = SETTINGS.copy()
-    
-    # 将 client_manager 实例传递给 dynamic 模块
-    dynamic.initialize_dynamic_scripting(current_settings, client_manager_instance=client_manager)
-    
+    dynamic.initialize_dynamic_scripting(current_settings)
     manage_smb_share(current_settings, start=True)
     if current_settings['dhcp_enabled']:
-        # 将 client_manager 实例传递给 DHCP 服务器线程
-        dhcp_thread = threading.Thread(target=run_dhcp_server, args=(current_settings, stop_event, client_manager), daemon=True)
-        dhcp_thread.start()
+        dhcp_thread = threading.Thread(target=run_dhcp_server, args=(current_settings, stop_event), daemon=True); dhcp_thread.start()
         proxy_thread = threading.Thread(target=run_proxy_listener, args=(current_settings, stop_event), daemon=True); proxy_thread.start()
         if current_settings['dhcp_mode'] == 'dhcp':
             dhcp_detector_thread = threading.Thread(target=detect_other_dhcp_servers, args=(stop_event,), daemon=True)
@@ -1178,7 +1207,6 @@ def start_services():
     if current_settings['http_enabled']:
         http_thread = threading.Thread(target=run_http_server, args=(current_settings, stop_event), daemon=True); http_thread.start()
 
-# ... (stop_services, ConfigWindow, NBpxeApp 和 main 部分保持不变) ...
 def stop_services():
     if 'stop_event' in globals() and not stop_event.is_set():
         log_message("--- 正在停止所有服务 ---"); stop_event.set()
@@ -1485,7 +1513,7 @@ class ConfigWindow(tk.Toplevel):
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("NBPXE 服务器 20250916")
+        self.root.title("NBPXE 服务器 20250915")
         self.root.geometry("800x600")
         main_frame = ttk.Frame(root, padding="10")
         main_frame.pack(fill="both", expand=True)

@@ -10,8 +10,7 @@ import time
 import re
 import json
 from tkinter.scrolledtext import ScrolledText
-import bt
-import ipaddress
+import bt # <--- [新] 增加此行
 
 # --- 文件名常量 ---
 CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
@@ -19,11 +18,6 @@ IPXEBOOT_TXT_PATH = 'ipxeboot.txt'
 INIT_IPXE_PATH = 'Boot/ipxefm/init.ipxe'
 # --- 服务端探测客户端的特殊MAC地址 ---
 PROBE_MAC = '00-11-22-33-44-55'
-# --- [新] 批量生成客户端信息的输出文件 ---
-BATCH_CLIENT_OUTPUT_FILE = 'client_ip_mac.txt'
-
-# ... (IPXEFileManager, ScrolledFrame, BatchAddClientDialog, MenuEditDialog, MenuConfigWindow 类保持不变，此处省略以节省篇幅) ...
-# [请注意：您需要将之前生成的这些类的代码粘贴回这里，或者直接在您已有的 `client.py` 文件上修改 `ClientManager` 类]
 
 # ################################################################# #
 # #################### iPXE 文件管理器 (新功能) #################### #
@@ -225,98 +219,6 @@ class IPXEFileManager(tk.Toplevel):
         with open(path, 'w', encoding='utf-8', newline='\n') as f:
             f.writelines(new_lines)
 
-# ################################################################# #
-# #################### [新] 批量添加客户端对话框 #################### #
-# ################################################################# #
-
-class BatchAddClientDialog(tk.Toplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.title("生成客户机列表")
-        self.transient(parent)
-        self.grab_set()
-        self.result = None
-
-        self.count_var = tk.StringVar()
-        self.ip_var = tk.StringVar()
-        self.name_var = tk.StringVar()
-
-        main_frame = ttk.Frame(self, padding=20)
-        main_frame.pack(fill="both", expand=True)
-
-        # --- 客户机数量 ---
-        ttk.Label(main_frame, text="客户机数量:").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Entry(main_frame, textvariable=self.count_var, width=15).grid(row=0, column=1, sticky="w", padx=5)
-        ttk.Label(main_frame, text="台").grid(row=0, column=2, sticky="w")
-        
-        # --- 起始地址 ---
-        ttk.Label(main_frame, text="起始地址:").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(main_frame, textvariable=self.ip_var, width=30).grid(row=1, column=1, columnspan=2, sticky="ew", padx=5)
-        
-        # --- 起始名称 ---
-        ttk.Label(main_frame, text="起始名称:").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Entry(main_frame, textvariable=self.name_var, width=30).grid(row=2, column=1, columnspan=2, sticky="ew", padx=5)
-
-        # --- 按钮 ---
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=3, column=0, columnspan=3, pady=(20, 0))
-        ttk.Button(button_frame, text="生成客户机", command=self.on_generate).pack(side="left", padx=10)
-        ttk.Button(button_frame, text="取消", command=self.destroy).pack(side="left", padx=10)
-        
-        self.wait_window(self)
-
-    def on_generate(self):
-        try:
-            count = int(self.count_var.get())
-            start_ip_str = self.ip_var.get().strip()
-            start_name = self.name_var.get().strip()
-
-            if count <= 0:
-                messagebox.showerror("输入错误", "客户机数量必须大于0。", parent=self)
-                return
-            if not start_ip_str:
-                messagebox.showerror("输入错误", "起始地址不能为空。", parent=self)
-                return
-            if not start_name:
-                messagebox.showerror("输入错误", "起始名称不能为空。", parent=self)
-                return
-
-            start_ip = ipaddress.ip_address(start_ip_str)
-            
-            # 尝试从名称中分离前缀和数字
-            name_match = re.match(r'^(.*?)(\d+)$', start_name)
-            if name_match:
-                name_prefix = name_match.group(1)
-                name_num_str = name_match.group(2)
-                name_start_num = int(name_num_str)
-                num_padding = len(name_num_str)
-            else:
-                name_prefix = start_name
-                name_start_num = 1
-                num_padding = 1
-
-            self.result = []
-            for i in range(count):
-                current_ip = start_ip + i
-                current_name_num = name_start_num + i
-                current_name = f"{name_prefix}{str(current_name_num).zfill(num_padding)}"
-                
-                client_data = {
-                    'name': current_name,
-                    'ip': str(current_ip),
-                    'mac': '00-00-00-00-00-00', # 固定为全0
-                    'status': '离线 [待分配]'
-                }
-                self.result.append(client_data)
-            
-            self.destroy()
-
-        except ValueError as e:
-            messagebox.showerror("输入错误", f"输入格式无效: {e}", parent=self)
-        except Exception as e:
-            messagebox.showerror("生成失败", f"发生未知错误: {e}", parent=self)
-
-
 # ############################################################### #
 # #################### 右键菜单与客户端管理 #################### #
 # ############################################################### #
@@ -430,7 +332,6 @@ class MenuConfigWindow(tk.Toplevel):
         self.client_manager.update_menu_config(self.local_menu_config); self.destroy()
 
 class ClientManager:
-    # ... (之前的 __init__, _normalize_mac, stop_monitoring, 等方法保持不变) ...
     CLIENT_SYMBOL = "\U0001F4BB"
 
     def __init__(self, parent_frame, logger=None, settings=None):
@@ -439,7 +340,8 @@ class ClientManager:
         self.client_counter = 0; self.mac_to_iid = {}; self.ip_to_mac = {}; self.map_lock = threading.Lock()
         self.logger = logger
         self.settings = settings
-        self.tracker_instance = None
+        self.tracker_instance = None # <--- [新] 增加此行
+        # [名称变更] last_wim -> last_boot_file，更通用
         self.mac_to_last_boot_file = {}
         self.last_checked_index = 0
         self.CLIENTS_TO_CHECK_PER_CYCLE = 5
@@ -453,14 +355,23 @@ class ClientManager:
         columns = ('#', 'firmware', 'name', 'ip', 'mac', 'status', 'disk_health', 'net_speed')
         self.tree = ttk.Treeview(self.frame, columns=columns, show='headings', selectmode='extended')
         self._setup_treeview_columns()
+        # vvvvvv 替换为这个全新的样式定义块 vvvvvv
+        # 为每一种最终状态定义一个独立的样式，避免标签冲突
         
+        # 1. 离线状态
         self.tree.tag_configure('offline_status', foreground='#aaaaaa', font=('Helvetica', 9, 'normal'))
+        
+        # 2. 中间状态 (如PXE、启动中等)
         self.tree.tag_configure('intermediate_status', font=('Helvetica', 9, 'bold'))
+        
+        # 3. 所有在线状态 (都带有淡绿色背景)
+        # 3a. 在线 - 健康状态未知或中性 (例如 "Unknown", "N/A")
         self.tree.tag_configure('online_neutral', background='#e6ffed', font=('Helvetica', 9, 'bold'))
+        # 3b. 在线 - 健康状态良好 (例如 "OK")
         self.tree.tag_configure('online_health_ok', background='#e6ffed', foreground='green', font=('Helvetica', 9, 'bold'))
+        # 3c. 在线 - 健康状态不佳 (例如 "Bad", "Error")
         self.tree.tag_configure('online_health_bad', background='#e6ffed', foreground='red', font=('Helvetica', 9, 'bold'))
-        self.tree.tag_configure('placeholder_client', foreground='blue')
-
+# ^^^^^^ 替换结束 ^^^^^^
         scrollbar = ttk.Scrollbar(self.frame, orient=tk.VERTICAL, command=self.tree.yview); self.tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
@@ -470,71 +381,6 @@ class ClientManager:
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_worker, daemon=True)
         self.heartbeat_thread.start()
 
-    # --- [新] 新增方法 ---
-    def get_unassigned_clients(self):
-        """遍历UI列表，返回所有待分配(MAC为全0)的客户端信息。"""
-        unassigned = []
-        for iid in self.tree.get_children(''):
-            values = self.tree.item(iid, 'values')
-            if len(values) >= 5 and values[4] == '00-00-00-00-00-00':
-                unassigned.append({
-                    'name': values[2].lstrip(self.CLIENT_SYMBOL).strip(),
-                    'ip': values[3]
-                })
-        return unassigned
-
-    def assign_mac_to_ip(self, ip_to_find, new_mac):
-        """
-        查找具有指定IP和全0 MAC的客户端，并为其分配新的MAC地址。
-        这是一个线程安全的操作，通过 after() 在主线程中更新UI。
-        """
-        found_iid = None
-        for iid in self.tree.get_children(''):
-            values = self.tree.item(iid, 'values')
-            if len(values) >= 5 and values[3] == ip_to_find and values[4] == '00-00-00-00-00-00':
-                found_iid = iid
-                break
-        
-        if not found_iid:
-            if self.logger: self.logger(f"绑定失败: 未找到IP为 {ip_to_find} 的待分配客户端。", "ERROR")
-            return False
-
-        def _update_and_save():
-            try:
-                # 更新UI中的MAC地址和状态
-                current_values = list(self.tree.item(found_iid, 'values'))
-                current_values[4] = new_mac
-                current_values[5] = "离线" # 更新状态
-                self.tree.item(found_iid, values=tuple(current_values), tags=('offline_status',)) # 移除占位符样式
-
-                # 更新内部映射
-                if '00-00-00-00-00-00' in self.mac_to_iid and self.mac_to_iid['00-00-00-00-00-00'] == found_iid:
-                     del self.mac_to_iid['00-00-00-00-00-00']
-                self.mac_to_iid[new_mac] = found_iid
-                self.ip_to_mac[ip_to_find] = new_mac
-
-                # 保存到INI文件
-                self._save_config_to_ini()
-                if self.logger: self.logger(f"绑定成功: MAC {new_mac} 已分配给 IP {ip_to_find} 并已保存。", "INFO")
-            except Exception as e:
-                if self.logger: self.logger(f"UI更新或保存期间出错: {e}", "ERROR")
-
-        self.root.after(0, _update_and_save)
-        return True
-
-    def get_ip_for_mac(self, mac_to_find):
-        """根据MAC地址查找已配置的静态IP地址。"""
-        mac_norm = self._normalize_mac(mac_to_find)
-        if mac_norm in self.mac_to_iid:
-            iid = self.mac_to_iid[mac_norm]
-            if self.tree.exists(iid):
-                values = self.tree.item(iid, 'values')
-                if len(values) >= 4:
-                    return values[3] # 返回IP地址
-        return None
-
-    # --- [修改] _save_config_to_ini 和 _show_context_menu ---
-    # ... (其他方法，如 _normalize_mac, _heartbeat_worker, _update_ui 等保持不变) ...
     def _normalize_mac(self, mac_string):
         if not isinstance(mac_string, str): return ""
         cleaned = re.sub(r'[^a-fA-F0-9]', '', mac_string).upper()
@@ -543,10 +389,13 @@ class ClientManager:
 
     def stop_monitoring(self):
         self.stop_heartbeat.set()
+        # vvvvvvv [新] 增加以下代码块 vvvvvvv
         if self.tracker_instance:
             if self.logger: self.logger("正在停止内置 BitTorrent Tracker...", "INFO")
             bt.stop_tracker()
             self.tracker_instance = None
+        # ^^^^^^^ [新] 增加以上代码块 ^^^^^^^
+
 
     def _heartbeat_worker(self):
         time.sleep(10)
@@ -601,7 +450,7 @@ class ClientManager:
 
             checked_count += 1
             mac_norm = self._normalize_mac(mac)
-            if mac_norm == PROBE_MAC or mac_norm == '00-00-00-00-00-00':
+            if mac_norm == PROBE_MAC:
                 current_scan_index = (current_scan_index + 1) % len(all_iids); continue
 
             clean_name = name_with_symbol.lstrip(self.CLIENT_SYMBOL).strip()
@@ -617,20 +466,33 @@ class ClientManager:
 
             update_data = {}
 
+#  vvvvv 替换为这个新的逻辑块 vvvvv
+
             if is_online:
+                # [最终决定版逻辑]: 状态显示完全依赖于是否存在 last_boot_file 记录
                 last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
+
                 if not last_boot_file:
+                    # 如果没有任何网络启动文件记录，则状态必须是 '本地启动'
                     online_status_text = "在线[本地启动]"
                 else:
+                    # 如果有网络启动文件记录，则显示该文件名
                     online_status_text = f"在线 [{last_boot_file}]"
+
+                # 如果计算出的正确状态与当前显示的状态不同，或IP地址有更新，则准备更新
                 if online_status_text != current_status or final_ip != current_ip:
                     update_data.update({'status': online_status_text, 'ip': final_ip})
             else:
+                # [核心逻辑修正] 只要客户端当前不是“离线”状态，就将其更新为离线
                 if self.STATUS_MAP['offline'] not in current_status:
                     last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
                     offline_status_text = f"{self.STATUS_MAP['offline']}" + (f" [{last_boot_file}]" if last_boot_file else "")
+                    
+                    # 仅在需要更新时才加入队列，避免不必要的UI刷新
                     if offline_status_text != current_status:
                         update_data['status'] = offline_status_text
+
+#  ^^^^^ 替换结束 ^^^^^
 
             if update_data:
                 update_data['mac'] = mac_norm
@@ -672,10 +534,7 @@ class ClientManager:
             is_probe_client = (mac_norm == PROBE_MAC)
             final_status = data_to_update.get('status', None)
             tags = ()
-
-            if mac_norm == '00-00-00-00-00-00':
-                tags = ('placeholder_client',)
-            elif not is_probe_client and final_status:
+            if not is_probe_client and final_status:
                 if '离线' in final_status:
                     tags = ('offline_status',)
                 elif '在线' in final_status:
@@ -684,17 +543,16 @@ class ClientManager:
                         tags = ('online_health_ok',)
                     elif health in ['UNKNOWN', 'N/A', '未知']:
                         tags = ('online_neutral',)
-                    elif health:
+                    elif health: # 如果健康状态存在但不是OK/Unknown，则视为不佳
                         tags = ('online_health_bad',)
-                    else:
+                    else: # 如果客户端在线但还没有健康报告
                         tags = ('online_neutral',)
-                else:
+                else: # 所有其他状态 (PXE, 传输, 启动中...)
                     tags = ('intermediate_status',)
-
+            # ^^^^^^ 替换结束 ^^^^^^
             health = data_to_update.get('disk_health')
             if health:
                 tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
-
             if mac_norm in self.mac_to_iid and self.tree.exists(self.mac_to_iid[mac_norm]):
                 iid = self.mac_to_iid[mac_norm]
                 current_values = list(self.tree.item(iid, 'values'))
@@ -714,8 +572,7 @@ class ClientManager:
                 vals = ('*', '*', display_name, data_to_update.get('ip', '未知'), mac_norm, '*', '未知', '未知') if is_probe_client else (seq, data_to_update.get('firmware', '未知'), display_name, data_to_update.get('ip', '未知'), mac_norm, final_status or "未知", data_to_update.get('disk_health', '未知'), data_to_update.get('net_speed', '未知'))
                 if not is_probe_client: self.client_counter += 1
                 iid = self.tree.insert('', 0, values=vals, tags=tags); self.mac_to_iid[mac_norm] = iid
-            if not is_probe_client and mac_norm != '00-00-00-00-00-00':
-                self._save_config_to_ini()
+            if not is_probe_client: self._save_config_to_ini()
         self.root.after(0, update_action)
 
     def _on_selection_change(self, event):
@@ -763,13 +620,18 @@ class ClientManager:
                 health = client_data.get('disk_health', '未知')
                 ip = client_data.get('ip', '未知')
 
+                # =======================[ 关键修复点 ]=======================
+                # 在加载时，重建IP到MAC的内存映射
                 if ip and ip != '未知':
                     self.ip_to_mac[ip] = mac_norm
 
+                # [名称变更] 优先读取新的 last_boot_file 键，并兼容旧的 last_wim 键
                 last_file = client_data.get('last_boot_file', client_data.get('last_wim', ''))
                 self.mac_to_last_boot_file[mac_norm] = last_file
+                # =======================[ 修复结束 ]=======================
 
                 tags = ('online_status',) if '在线' in status else ('offline_status',) if '离线' in status else ('intermediate_status',)
+                # 修改后的代码
                 tags += ('health_ok',) if health.upper() == 'OK' else ('health_neutral',) if health.upper() in ['UNKNOWN', 'N/A', '未知'] else ('health_bad',)
                 values = (seq, client_data.get('firmware', '未知'), f"{self.CLIENT_SYMBOL} {hostname}".strip(), ip, mac_norm, status, health, client_data.get('net_speed', '未知'))
                 iid = self.tree.insert('', 0, values=values, tags=tags); self.mac_to_iid[mac_norm] = iid
@@ -789,14 +651,11 @@ class ClientManager:
             if len(vals) == 8:
                 seq, firmware, name_with_symbol, ip, mac, status, health, speed = vals
                 mac_norm = self._normalize_mac(mac)
-
-                if mac_norm == '00-00-00-00-00-00':
-                    continue
-
                 if not mac_norm or mac_norm == PROBE_MAC or mac_norm in saved_macs: continue
                 saved_macs.add(mac_norm)
                 clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
 
+                # [名称变更] 使用新的变量和INI键
                 last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
                 config[mac_norm] = {
                     'seq': str(seq), 'firmware': str(firmware), 'name': clean_name, 'ip': str(ip),
@@ -814,25 +673,30 @@ class ClientManager:
         selection_count, has_any_clients = len(self.tree.selection()), bool(self.tree.get_children())
         menu, item_state = tk.Menu(self.root, tearoff=0), 'normal' if selection_count > 0 else 'disabled'
         
-        menu.add_command(label="批量添加客户机...", command=self._open_batch_add_dialog, state='normal')
-        menu.add_separator()
-
         menu.add_command(label="唤醒 (WOL)", command=self._wake_on_lan_command, state=item_state)
         menu.add_separator()
 
+        # --- 这是核心修改部分 ---
+        # 1. 创建一个名为“操作客户机”的子菜单
         operate_submenu = tk.Menu(menu, tearoff=0)
 
+        # 2. 将所有自定义命令添加到这个子菜单中
         for item in self.menu_config:
             cmd = lambda p=item['path'], a=item['args']: self._execute_custom_command(p, a)
             operate_submenu.add_command(label=item['name'], command=cmd)
         
+        # 3. 将“操作客户机”子菜单作为一个级联项添加到主菜单
         menu.add_cascade(label="操作客户机", menu=operate_submenu, state=item_state)
         menu.add_command(label="为文件制作BT种子...", command=self._create_torrent_command, state='normal')
+
+        # --- 修改结束 ---
         menu.add_command(label="配置操作菜单...", command=self._open_menu_config_window, state='normal')
 
+        # vvvvvvv [修改] 修改以下代码块 vvvvvvv
         if self.menu_config: menu.add_separator()
         menu.add_command(label="iPXEFM管理", command=self._open_ipxefm_manager, state='normal')
         menu.add_separator()
+        # ^^^^^^^ [修改] 修改以上代码块 ^^^^^^^
         
         select_state = 'normal' if has_any_clients else 'disabled'
         menu.add_command(label="全选", command=self._select_all, state=select_state)
@@ -844,53 +708,20 @@ class ClientManager:
         menu.add_separator()
         menu.add_command(label="清空全部客户机", command=self._clear_all_clients, state='normal' if has_any_clients else 'disabled')
         menu.post(event.x_root, event.y_root)
-
-    def _open_batch_add_dialog(self):
-        dialog = BatchAddClientDialog(self.root)
-        if dialog.result:
-            generated_clients = dialog.result
-            
-            for client_data in generated_clients:
-                self.client_counter += 1
-                values = (
-                    self.client_counter,
-                    '未知',
-                    f"{self.CLIENT_SYMBOL} {client_data['name']}",
-                    client_data['ip'],
-                    client_data['mac'],
-                    client_data['status'],
-                    '未知',
-                    '未知'
-                )
-                self.tree.insert('', 'end', values=values, tags=('placeholder_client',))
-            
-            try:
-                with open(BATCH_CLIENT_OUTPUT_FILE, 'w', encoding='utf-8') as f:
-                    for client in generated_clients:
-                        f.write(f"{client['name']}\t{client['ip']}\t{client['mac']}\n")
-                
-                messagebox.showinfo(
-                    "生成成功", 
-                    f"已成功生成 {len(generated_clients)} 个客户机，并写入到 '{BATCH_CLIENT_OUTPUT_FILE}' 文件中。",
-                    parent=self.root
-                )
-            except Exception as e:
-                messagebox.showerror(
-                    "文件写入失败",
-                    f"无法写入到 '{BATCH_CLIENT_OUTPUT_FILE}':\n{e}",
-                    parent=self.root
-                )
-# ... (其他方法，如 _create_torrent, _open_ipxefm_manager 等保持不变) ...
+    # vvvvvvv [新] 在 ClientManager 类中增加这个完整的新方法 vvvvvvv
     def _create_torrent_command(self):
+        """处理“制作torrent种子”菜单命令的逻辑。"""
+        # 1. 从主程序获取必要的配置信息
         http_root = self.settings.get('http_root', '.')
         http_port = self.settings.get('http_port', 80)
         server_ip = self.settings.get('server_ip', '127.0.0.1')
-        tracker_port = 6969
+        tracker_port = 6969  # Tracker 服务的默认端口
 
         if not self.settings.get('http_enabled', False):
             messagebox.showerror("操作失败", "无法创建种子，因为 HTTP 服务未启用。", parent=self.root)
             return
 
+        # 2. 弹出文件选择对话框，让用户选择文件
         http_root_abs = os.path.abspath(http_root)
         filepath = filedialog.askopenfilename(
             title="请选择一个文件以制作种子 (该文件必须位于HTTP根目录内,可以重命名为bt.torrent直接下发)",
@@ -899,6 +730,7 @@ class ClientManager:
         if not filepath:
             return
 
+        # 3. 验证所选文件是否确实在HTTP根目录中，这是Web Seed能工作的前提
         filepath_abs = os.path.abspath(filepath)
         if not filepath_abs.startswith(http_root_abs):
             messagebox.showerror(
@@ -910,6 +742,7 @@ class ClientManager:
             )
             return
 
+        # 4. 如果内置Tracker尚未运行，则启动它
         try:
             if not self.tracker_instance or not self.tracker_instance['thread'].is_alive():
                 if self.logger: self.logger(f"正在启动内置 BitTorrent Tracker (端口: {tracker_port})...", "INFO")
@@ -917,16 +750,18 @@ class ClientManager:
                 if not self.tracker_instance:
                     messagebox.showerror("Tracker 启动失败", f"无法在端口 {tracker_port} 上启动 Tracker 服务。", parent=self.root)
                     return
-                time.sleep(0.5)
+                time.sleep(0.5) # 等待服务器线程启动
         except Exception as e:
             messagebox.showerror("Tracker 启动异常", f"启动 Tracker 时发生错误: {e}", parent=self.root)
             if self.logger: self.logger(f"启动 Tracker 时发生错误: {e}", "ERROR")
             return
 
+        # 5. 构建Tracker URL和Web Seed URL
         tracker_announce_url = f"http://{server_ip}:{tracker_port}/announce"
         relative_path = os.path.relpath(filepath_abs, http_root_abs).replace('\\', '/')
         web_seed_url = f"http://{server_ip}:{http_port}/{relative_path}"
 
+        # 6. 调用核心功能创建种子文件
         try:
             if self.logger: self.logger(f"正在为 '{filepath_abs}' 创建种子文件...", "INFO")
             torrent_path, info_hash = bt.create_torrent_file(filepath_abs, tracker_announce_url, web_seed_url)
@@ -943,6 +778,7 @@ class ClientManager:
         except Exception as e:
             messagebox.showerror("创建失败", f"创建种子文件时发生错误: {e}", parent=self.root)
             if self.logger: self.logger(f"创建种子文件时发生错误: {e}", "ERROR")
+    # ^^^^^^^ [新] 新方法的结束 ^^^^^^^
 
     def _open_ipxefm_manager(self): IPXEFileManager(self.root)
     def _select_all(self): self.tree.selection_set(self.tree.get_children(''))
@@ -986,6 +822,7 @@ class ClientManager:
             for iid in sel_iids:
                 mac_norm = self._normalize_mac(self.tree.item(iid, 'values')[4])
                 if mac_norm in self.mac_to_iid: del self.mac_to_iid[mac_norm]
+                # [名称变更]
                 if mac_norm in self.mac_to_last_boot_file: del self.mac_to_last_boot_file[mac_norm]
                 self.tree.delete(iid)
             self._save_config_to_ini()
@@ -994,6 +831,7 @@ class ClientManager:
         if not self.tree.get_children(): return
         if messagebox.askyesno("确认清空", "警告：这将从列表和配置文件中永久删除所有客户机记录！\n菜单配置将保留。\n\n您确定要继续吗?", icon='warning', parent=self.root):
             self.mac_to_iid.clear()
+            # [名称变更]
             self.mac_to_last_boot_file.clear()
             for iid in self.tree.get_children(''): self.tree.delete(iid)
             self.client_counter = 0; self._save_config_to_ini()
@@ -1052,12 +890,21 @@ class ClientManager:
         mac = self._get_mac_from_ip(client_ip)
         basename = os.path.basename(filename)
 
+        # [核心微调]: 定义只应被记录并显示在状态栏的启动镜像文件类型
+        # .efi 已被移除，新增了 .ramos 和 .install
         BOOT_IMAGE_EXTENSIONS = {'.wim', '.iso', '.vhd', '.img', '.ima', '.ramos', '.install'}
+
+        # 移除文件名中的已知后缀，以获取干净的文件名（例如 'install' 来自 'install.wim'）
         clean_basename, _ = os.path.splitext(basename)
+
+        # 检查文件的实际扩展名
         _, file_ext = os.path.splitext(filename.lower())
 
         if mac and file_ext in BOOT_IMAGE_EXTENSIONS:
+            # 如果传输完成的是指定的启动镜像类型之一，就记录其文件名
+            # 如果文件名是 'install'，则使用其父目录名作为标识
             if clean_basename.lower() == 'install':
+                # 获取文件的父目录名，例如 C:\TFTP\Boot\wim\win10\install.wim -> win10
                 parent_dir_name = os.path.basename(os.path.dirname(filename))
                 display_name = parent_dir_name if parent_dir_name else basename
                 self.mac_to_last_boot_file[mac] = display_name
@@ -1067,6 +914,9 @@ class ClientManager:
                 self._update_ui(mac, {'status': f"启动({basename})"})
 
         elif mac:
+            # 如果传输的是其他文件（如 .efi），则不记录它为“最后启动文件”，
+            # 这样心跳检测就会将其正确地判断为“本地启动”或保持之前的状态。
+            # 我们仍然可以短暂显示一个通用的“启动”状态。
             self._update_ui(mac, {'status': f"启动({basename})"})
 
     def handle_file_upload_complete(self, client_ip, filename):
