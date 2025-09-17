@@ -3,7 +3,6 @@
 
 import os
 from urllib.parse import unquote
-import configparser
 
 # 模块配置，由主程序初始化
 _SERVER_CONFIG = {}
@@ -20,9 +19,6 @@ def initialize_dynamic_scripting(settings: dict, client_manager_instance=None):
     _SERVER_CONFIG['server_ip'] = settings.get('server_ip', '127.0.0.1')
     _SERVER_CONFIG['http_port'] = settings.get('http_port', 80)
     _SERVER_CONFIG['http_root'] = settings.get('http_root', '.') 
-    _SERVER_CONFIG['subnet_mask'] = settings.get('subnet_mask', '')
-    _SERVER_CONFIG['router_ip'] = settings.get('router_ip', '')
-    _SERVER_CONFIG['dns_server_ip'] = settings.get('dns_server_ip', '')
     _SERVER_CONFIG['http_uri'] = f"http://{_SERVER_CONFIG['server_ip']}:{_SERVER_CONFIG['http_port']}"
     _CLIENT_MANAGER = client_manager_instance
     
@@ -212,104 +208,6 @@ def _generate_all_files_menu(http_uri: str) -> str:
 
     return "\n".join(script)
 
-def _generate_client_info_script(client_ip: str) -> str:
-    """
-    生成一个有效的 iPXE 脚本，该脚本使用客户端的网络和身份信息设置变量。
-    如果某个值找不到，则将其留空。
-    """
-    info = {
-        'pcname': '',
-        'ip': client_ip,
-        'mask': _SERVER_CONFIG.get('subnet_mask', ''),
-        'gateway': _SERVER_CONFIG.get('router_ip', ''),
-        'dns1': '',
-        'dns2': '',
-        'mac': ''
-    }
-
-    # 解析DNS服务器 (可以是逗号分隔的)
-    dns_servers = _SERVER_CONFIG.get('dns_server_ip', '').replace(' ', '').split(',')
-    if len(dns_servers) > 0 and dns_servers[0]:
-        info['dns1'] = dns_servers[0]
-    if len(dns_servers) > 1 and dns_servers[1]:
-        info['dns2'] = dns_servers[1]
-
-    # 从实时的 ClientManager 映射中获取 MAC 地址
-    mac_address = None
-    if _CLIENT_MANAGER and hasattr(_CLIENT_MANAGER, 'ip_to_mac'):
-        mac_address = _CLIENT_MANAGER.ip_to_mac.get(client_ip)
-    
-    # 如果找到 MAC 地址，用它从 INI 配置文件中查找计算机名
-    if mac_address:
-        mac_norm = mac_address.upper().replace(':', '-')
-        info['mac'] = mac_norm
-        
-        CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
-        if os.path.exists(CONFIG_INI_FILENAME):
-            config = configparser.ConfigParser(interpolation=None)
-            try:
-                config.read(CONFIG_INI_FILENAME, encoding='utf-8')
-                if config.has_section(mac_norm):
-                    info['pcname'] = config.get(mac_norm, 'name', fallback='')
-            except Exception:
-                pass # 如果配置文件读取失败，则静默处理
-
-    # 使用正确的 'set key value' 语法构建 iPXE 脚本
-    script = [
-        "#!ipxe",
-        "rem Predefined information about this machine",
-        f"set pcname {info['pcname']}",
-        f"set ip {info['ip']}",
-        f"set mask {info['mask']}",
-        f"set gateway {info['gateway']}",
-        f"set dns1 {info['dns1']}",
-        f"set dns2 {info['dns2']}",
-        f"set mac {info['mac']}",
-    ]
-    
-    return "\n".join(script)
-
-def _generate_unattend_xml(client_ip: str) -> str:
-    """
-    根据客户端IP从客户列表中获取计算机名，生成一个简单的unattend.xml文件内容。
-    """
-    computer_name = ""  # 如果未找到，默认为空
-
-    # 从实时的 ClientManager 映射中获取 MAC 地址
-    mac_address = None
-    if _CLIENT_MANAGER and hasattr(_CLIENT_MANAGER, 'ip_to_mac'):
-        mac_address = _CLIENT_MANAGER.ip_to_mac.get(client_ip)
-
-    # 如果找到 MAC 地址，则从 INI 配置文件中查找计算机名
-    if mac_address:
-        mac_norm = mac_address.upper().replace(':', '-')
-        
-        CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
-        if os.path.exists(CONFIG_INI_FILENAME):
-            config = configparser.ConfigParser(interpolation=None)
-            try:
-                config.read(CONFIG_INI_FILENAME, encoding='utf-8')
-                if config.has_section(mac_norm):
-                    computer_name = config.get(mac_norm, 'name', fallback='')
-            except Exception as e:
-                # 如有需要，可打印错误用于调试
-                print(f"为 {mac_norm} 读取 {CONFIG_INI_FILENAME} 时出错: {e}")
-                pass  # 静默失败，computer_name 保持为 ""
-
-    # 构建 XML 字符串
-    xml_content = f"""<?xml version="1.0" encoding="utf-8"?>    
-<unattend xmlns="urn:schemas-microsoft-com:unattend">    
-    <settings pass="windowsPE">    
-        <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">    
-            <ComputerName>{computer_name}</ComputerName> 
-            <EnableNetwork>true</EnableNetwork>    
-            <EnableFirewall>false</EnableFirewall>    
-        </component>    
-    </settings>    
-</unattend>
-"""
-
-    return xml_content
 
 def generate_dynamic_script(params: dict, client_ip: str) -> str:
     """
@@ -330,27 +228,17 @@ def generate_dynamic_script(params: dict, client_ip: str) -> str:
         bootfile = unquote(bootfile)
         bootfile = bootfile.strip('"')
         
-        # 2a. 处理 'getmyxml' 生成 unattend.xml
-        if bootfile.lower() == 'getmyxml':
-            print(f"Dynamic script request for unattend.xml ('getmyxml') from {client_ip}")
-            return _generate_unattend_xml(client_ip)
-        
-        # 2b. 处理 'getmyip' 获取客户端信息
-        if bootfile.lower() == 'getmyip':
-            print(f"Dynamic script request for client info ('getmyip') from {client_ip}")
-            return _generate_client_info_script(client_ip)
-        
-        # 2c. 处理 'whoami' 请求
+        # 2a. 处理 'whoami' 请求
         if bootfile.lower() == 'whoami':
             print(f"Dynamic script request for client identification ('whoami') from {client_ip}")
             return _generate_whoami_menu(http_uri)
         
-        # 2d. 处理 'ipxefm' 请求
+        # 2b. 处理 'ipxefm' 请求
         if bootfile.lower() == 'ipxefm':
             print(f"Dynamic script request to list all bootable files ('ipxefm') from {client_ip}")
             return _generate_all_files_menu(http_uri)
         
-        # 2e. 处理常规文件引导
+        # 2c. 处理常规文件引导
         print(f"Dynamic script request for direct boot: '{bootfile}' from {client_ip}")
         file_ext = os.path.splitext(bootfile)[1].lower()
 

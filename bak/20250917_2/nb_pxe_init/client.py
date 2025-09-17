@@ -22,6 +22,9 @@ PROBE_MAC = '00-11-22-33-44-55'
 # --- [新] 批量生成客户端信息的输出文件 ---
 BATCH_CLIENT_OUTPUT_FILE = 'client_ip_mac.txt'
 
+# ... (IPXEFileManager, ScrolledFrame, BatchAddClientDialog, MenuEditDialog, MenuConfigWindow 类保持不变，此处省略以节省篇幅) ...
+# [请注意：您需要将之前生成的这些类的代码粘贴回这里，或者直接在您已有的 `client.py` 文件上修改 `ClientManager` 类]
+
 # ################################################################# #
 # #################### iPXE 文件管理器 (新功能) #################### #
 # ################################################################# #
@@ -241,16 +244,20 @@ class BatchAddClientDialog(tk.Toplevel):
         main_frame = ttk.Frame(self, padding=20)
         main_frame.pack(fill="both", expand=True)
 
+        # --- 客户机数量 ---
         ttk.Label(main_frame, text="客户机数量:").grid(row=0, column=0, sticky="w", pady=5)
         ttk.Entry(main_frame, textvariable=self.count_var, width=15).grid(row=0, column=1, sticky="w", padx=5)
         ttk.Label(main_frame, text="台").grid(row=0, column=2, sticky="w")
         
+        # --- 起始地址 ---
         ttk.Label(main_frame, text="起始地址:").grid(row=1, column=0, sticky="w", pady=5)
         ttk.Entry(main_frame, textvariable=self.ip_var, width=30).grid(row=1, column=1, columnspan=2, sticky="ew", padx=5)
         
+        # --- 起始名称 ---
         ttk.Label(main_frame, text="起始名称:").grid(row=2, column=0, sticky="w", pady=5)
         ttk.Entry(main_frame, textvariable=self.name_var, width=30).grid(row=2, column=1, columnspan=2, sticky="ew", padx=5)
 
+        # --- 按钮 ---
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=3, column=0, columnspan=3, pady=(20, 0))
         ttk.Button(button_frame, text="生成客户机", command=self.on_generate).pack(side="left", padx=10)
@@ -267,25 +274,37 @@ class BatchAddClientDialog(tk.Toplevel):
             if count <= 0:
                 messagebox.showerror("输入错误", "客户机数量必须大于0。", parent=self)
                 return
-            if not start_ip_str or not start_name:
-                messagebox.showerror("输入错误", "起始地址和起始名称不能为空。", parent=self)
+            if not start_ip_str:
+                messagebox.showerror("输入错误", "起始地址不能为空。", parent=self)
+                return
+            if not start_name:
+                messagebox.showerror("输入错误", "起始名称不能为空。", parent=self)
                 return
 
             start_ip = ipaddress.ip_address(start_ip_str)
             
+            # 尝试从名称中分离前缀和数字
             name_match = re.match(r'^(.*?)(\d+)$', start_name)
             if name_match:
-                name_prefix, name_num_str = name_match.groups()
-                name_start_num, num_padding = int(name_num_str), len(name_num_str)
+                name_prefix = name_match.group(1)
+                name_num_str = name_match.group(2)
+                name_start_num = int(name_num_str)
+                num_padding = len(name_num_str)
             else:
-                name_prefix, name_start_num, num_padding = start_name, 1, 1
+                name_prefix = start_name
+                name_start_num = 1
+                num_padding = 1
 
             self.result = []
             for i in range(count):
+                current_ip = start_ip + i
+                current_name_num = name_start_num + i
+                current_name = f"{name_prefix}{str(current_name_num).zfill(num_padding)}"
+                
                 client_data = {
-                    'name': f"{name_prefix}{str(name_start_num + i).zfill(num_padding)}",
-                    'ip': str(start_ip + i),
-                    'mac': '00-00-00-00-00-00',
+                    'name': current_name,
+                    'ip': str(current_ip),
+                    'mac': '00-00-00-00-00-00', # 固定为全0
                     'status': '离线 [待分配]'
                 }
                 self.result.append(client_data)
@@ -296,54 +315,6 @@ class BatchAddClientDialog(tk.Toplevel):
             messagebox.showerror("输入错误", f"输入格式无效: {e}", parent=self)
         except Exception as e:
             messagebox.showerror("生成失败", f"发生未知错误: {e}", parent=self)
-
-# ############################################################### #
-# #################### [新] 编辑客户端对话框 #################### #
-# ############################################################### #
-
-class ClientEditDialog(tk.Toplevel):
-    def __init__(self, parent, client_data):
-        super().__init__(parent)
-        self.title("编辑客户端")
-        self.transient(parent)
-        self.grab_set()
-        self.result = None
-
-        self.name_var = tk.StringVar(value=client_data.get('name', ''))
-        self.ip_var = tk.StringVar(value=client_data.get('ip', ''))
-
-        main_frame = ttk.Frame(self, padding=20)
-        main_frame.pack(fill="both", expand=True)
-
-        ttk.Label(main_frame, text="计算机名:").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Entry(main_frame, textvariable=self.name_var, width=30).grid(row=0, column=1, sticky="ew", padx=5)
-
-        ttk.Label(main_frame, text="IP 地址:").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(main_frame, textvariable=self.ip_var, width=30).grid(row=1, column=1, sticky="ew", padx=5)
-        
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=2, column=0, columnspan=2, pady=(20, 0))
-        ttk.Button(button_frame, text="确定", command=self.on_ok).pack(side="left", padx=10)
-        ttk.Button(button_frame, text="取消", command=self.destroy).pack(side="left", padx=10)
-        
-        self.wait_window(self)
-
-    def on_ok(self):
-        name = self.name_var.get().strip()
-        ip = self.ip_var.get().strip()
-
-        if not name or not ip:
-            messagebox.showwarning("输入错误", "计算机名和IP地址不能为空。", parent=self)
-            return
-        
-        try:
-            ipaddress.ip_address(ip)
-        except ValueError:
-            messagebox.showwarning("输入错误", f"'{ip}' 不是一个有效的IP地址。", parent=self)
-            return
-
-        self.result = {'name': name, 'ip': ip}
-        self.destroy()
 
 
 # ############################################################### #
@@ -459,6 +430,7 @@ class MenuConfigWindow(tk.Toplevel):
         self.client_manager.update_menu_config(self.local_menu_config); self.destroy()
 
 class ClientManager:
+    # ... (之前的 __init__, _normalize_mac, stop_monitoring, 等方法保持不变) ...
     CLIENT_SYMBOL = "\U0001F4BB"
 
     def __init__(self, parent_frame, logger=None, settings=None):
@@ -498,7 +470,9 @@ class ClientManager:
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_worker, daemon=True)
         self.heartbeat_thread.start()
 
+    # --- [新] 新增方法 ---
     def get_unassigned_clients(self):
+        """遍历UI列表，返回所有待分配(MAC为全0)的客户端信息。"""
         unassigned = []
         for iid in self.tree.get_children(''):
             values = self.tree.item(iid, 'values')
@@ -511,66 +485,56 @@ class ClientManager:
 
     def assign_mac_to_ip(self, ip_to_find, new_mac):
         """
-        查找并更新客户端，为其分配新的MAC地址。
-        此操作会确保MAC地址在列表和配置文件中的唯一性，
-        通过移除任何已存在的、使用相同MAC地址的旧条目，来实现覆盖效果。
-        操作完成后会立即保存到INI文件。
+        查找具有指定IP和全0 MAC的客户端，并为其分配新的MAC地址。
+        这是一个线程安全的操作，通过 after() 在主线程中更新UI。
         """
-        placeholder_iid = None
+        found_iid = None
         for iid in self.tree.get_children(''):
             values = self.tree.item(iid, 'values')
             if len(values) >= 5 and values[3] == ip_to_find and values[4] == '00-00-00-00-00-00':
-                placeholder_iid = iid
+                found_iid = iid
                 break
         
-        if not placeholder_iid:
+        if not found_iid:
             if self.logger: self.logger(f"绑定失败: 未找到IP为 {ip_to_find} 的待分配客户端。", "ERROR")
             return False
 
         def _update_and_save():
             try:
-                with self.map_lock:
-                    if new_mac in self.mac_to_iid:
-                        existing_iid = self.mac_to_iid[new_mac]
-                        if existing_iid and existing_iid != placeholder_iid and self.tree.exists(existing_iid):
-                            old_values = self.tree.item(existing_iid, 'values')
-                            old_ip = old_values[3] if len(old_values) >= 4 else "未知"
-                            if self.logger: self.logger(f"MAC冲突: {new_mac} 已被占用(旧IP: {old_ip})。正在移除旧条目以完成新登记。", "WARNING")
-                            if old_ip != "未知" and self.ip_to_mac.get(old_ip) == new_mac:
-                                del self.ip_to_mac[old_ip]
-                            self.tree.delete(existing_iid)
-                        del self.mac_to_iid[new_mac]
-
-                current_values = list(self.tree.item(placeholder_iid, 'values'))
-                preassigned_name = current_values[2].lstrip(self.CLIENT_SYMBOL).strip()
+                # 更新UI中的MAC地址和状态
+                current_values = list(self.tree.item(found_iid, 'values'))
                 current_values[4] = new_mac
-                current_values[5] = "离线"
-                self.tree.item(placeholder_iid, values=tuple(current_values), tags=('offline_status',))
+                current_values[5] = "离线" # 更新状态
+                self.tree.item(found_iid, values=tuple(current_values), tags=('offline_status',)) # 移除占位符样式
 
-                with self.map_lock:
-                    self.mac_to_iid[new_mac] = placeholder_iid
-                    self.ip_to_mac[ip_to_find] = new_mac
-                
+                # 更新内部映射
+                if '00-00-00-00-00-00' in self.mac_to_iid and self.mac_to_iid['00-00-00-00-00-00'] == found_iid:
+                     del self.mac_to_iid['00-00-00-00-00-00']
+                self.mac_to_iid[new_mac] = found_iid
+                self.ip_to_mac[ip_to_find] = new_mac
+
+                # 保存到INI文件
                 self._save_config_to_ini()
-                if self.logger: self.logger(f"绑定成功: 计算机名 '{preassigned_name}' 已与唯一的 MAC {new_mac} 关联并保存。", "INFO")
-            except tk.TclError:
-                if self.logger: self.logger(f"绑定操作失败，因为目标条目已不存在。", "ERROR")
+                if self.logger: self.logger(f"绑定成功: MAC {new_mac} 已分配给 IP {ip_to_find} 并已保存。", "INFO")
             except Exception as e:
-                if self.logger: self.logger(f"客户端绑定期间发生未知错误: {e}", "ERROR")
+                if self.logger: self.logger(f"UI更新或保存期间出错: {e}", "ERROR")
 
         self.root.after(0, _update_and_save)
         return True
 
     def get_ip_for_mac(self, mac_to_find):
+        """根据MAC地址查找已配置的静态IP地址。"""
         mac_norm = self._normalize_mac(mac_to_find)
         if mac_norm in self.mac_to_iid:
             iid = self.mac_to_iid[mac_norm]
             if self.tree.exists(iid):
                 values = self.tree.item(iid, 'values')
                 if len(values) >= 4:
-                    return values[3]
+                    return values[3] # 返回IP地址
         return None
 
+    # --- [修改] _save_config_to_ini 和 _show_context_menu ---
+    # ... (其他方法，如 _normalize_mac, _heartbeat_worker, _update_ui 等保持不变) ...
     def _normalize_mac(self, mac_string):
         if not isinstance(mac_string, str): return ""
         cleaned = re.sub(r'[^a-fA-F0-9]', '', mac_string).upper()
@@ -634,25 +598,31 @@ class ClientManager:
                 _, _, name_with_symbol, current_ip, mac, current_status, _, _ = current_values
             except tk.TclError:
                 current_scan_index = (current_scan_index + 1) % len(all_iids); continue
-            
+
             checked_count += 1
             mac_norm = self._normalize_mac(mac)
             if mac_norm == PROBE_MAC or mac_norm == '00-00-00-00-00-00':
                 current_scan_index = (current_scan_index + 1) % len(all_iids); continue
-            
+
             clean_name = name_with_symbol.lstrip(self.CLIENT_SYMBOL).strip()
             is_online, final_ip = False, current_ip
+
             if current_ip and current_ip != '未知':
                 is_online = self._ping_ip(current_ip)
+
             if not is_online and clean_name and clean_name != '未知':
                 resolved_ip = self._get_ip_from_hostname(clean_name)
                 if resolved_ip and self._ping_ip(resolved_ip):
                     is_online, final_ip = True, resolved_ip
 
             update_data = {}
+
             if is_online:
                 last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
-                online_status_text = f"在线" + (f" [{last_boot_file}]" if last_boot_file else "[本地启动]")
+                if not last_boot_file:
+                    online_status_text = "在线[本地启动]"
+                else:
+                    online_status_text = f"在线 [{last_boot_file}]"
                 if online_status_text != current_status or final_ip != current_ip:
                     update_data.update({'status': online_status_text, 'ip': final_ip})
             else:
@@ -661,9 +631,11 @@ class ClientManager:
                     offline_status_text = f"{self.STATUS_MAP['offline']}" + (f" [{last_boot_file}]" if last_boot_file else "")
                     if offline_status_text != current_status:
                         update_data['status'] = offline_status_text
+
             if update_data:
                 update_data['mac'] = mac_norm
                 updates_to_perform.append(update_data)
+
             current_scan_index = (current_scan_index + 1) % len(all_iids)
 
         self.last_checked_index = current_scan_index
@@ -704,14 +676,24 @@ class ClientManager:
             if mac_norm == '00-00-00-00-00-00':
                 tags = ('placeholder_client',)
             elif not is_probe_client and final_status:
-                if '离线' in final_status: tags = ('offline_status',)
+                if '离线' in final_status:
+                    tags = ('offline_status',)
                 elif '在线' in final_status:
                     health = data_to_update.get('disk_health', '').upper()
-                    if health == 'OK': tags = ('online_health_ok',)
-                    elif health in ['UNKNOWN', 'N/A', '未知']: tags = ('online_neutral',)
-                    elif health: tags = ('online_health_bad',)
-                    else: tags = ('online_neutral',)
-                else: tags = ('intermediate_status',)
+                    if health == 'OK':
+                        tags = ('online_health_ok',)
+                    elif health in ['UNKNOWN', 'N/A', '未知']:
+                        tags = ('online_neutral',)
+                    elif health:
+                        tags = ('online_health_bad',)
+                    else:
+                        tags = ('online_neutral',)
+                else:
+                    tags = ('intermediate_status',)
+
+            health = data_to_update.get('disk_health')
+            if health:
+                tags += ('health_bad',) if health.upper() not in ['OK', '未知', 'N/A'] else ('health_ok',) if health.upper() == 'OK' else ()
 
             if mac_norm in self.mac_to_iid and self.tree.exists(self.mac_to_iid[mac_norm]):
                 iid = self.mac_to_iid[mac_norm]
@@ -732,12 +714,12 @@ class ClientManager:
                 vals = ('*', '*', display_name, data_to_update.get('ip', '未知'), mac_norm, '*', '未知', '未知') if is_probe_client else (seq, data_to_update.get('firmware', '未知'), display_name, data_to_update.get('ip', '未知'), mac_norm, final_status or "未知", data_to_update.get('disk_health', '未知'), data_to_update.get('net_speed', '未知'))
                 if not is_probe_client: self.client_counter += 1
                 iid = self.tree.insert('', 0, values=vals, tags=tags); self.mac_to_iid[mac_norm] = iid
-            if not is_probe_client:
+            if not is_probe_client and mac_norm != '00-00-00-00-00-00':
                 self._save_config_to_ini()
         self.root.after(0, update_action)
 
     def _on_selection_change(self, event):
-        current = set(self.tree.selection())
+        current, added = set(self.tree.selection()), set()
         added = current - self._last_selection_state
         if added:
             for item in self.tree.get_children(''):
@@ -769,21 +751,26 @@ class ClientManager:
                 order = [k.strip() for k in config['Menu_Order'].get('order', '').split(',') if k.strip()]
                 for item_key in order:
                     if config.has_section(item_key): self.menu_config.append(dict(config[item_key]))
-            
-            client_sections = [s for s in config.sections() if not s.startswith('Menu_')]
-            max_seq, loaded_macs = 0, set()
+            client_sections, max_seq, loaded_macs = [s for s in config.sections() if not s.startswith('Menu_')], 0, set()
             sorted_clients = sorted(client_sections, key=lambda s: int(config[s].get('seq', 0)), reverse=True)
             for section_name in sorted_clients:
+                mac_norm = self._normalize_mac(section_name)
+                if not mac_norm or mac_norm in loaded_macs: continue
+                loaded_macs.add(mac_norm)
                 client_data = config[section_name]
-                mac_norm = self._normalize_mac(client_data.get('mac', section_name if not section_name.startswith('UNASSIGNED_') else ''))
-                if mac_norm and mac_norm != '00-00-00-00-00-00' and mac_norm in loaded_macs: continue
-                if mac_norm and mac_norm != '00-00-00-00-00-00': loaded_macs.add(mac_norm)
                 seq = int(client_data.get('seq', 0)); max_seq = max(max_seq, seq)
-                status, hostname, health, ip = client_data.get('status', '未知'), client_data.get('name', '未知'), client_data.get('disk_health', '未知'), client_data.get('ip', '未知')
-                if ip and ip != '未知': self.ip_to_mac[ip] = mac_norm
-                self.mac_to_last_boot_file[mac_norm] = client_data.get('last_boot_file', client_data.get('last_wim', ''))
-                
-                tags = ('placeholder_client',) if mac_norm == '00-00-00-00-00-00' else (('online_status',) if '在线' in status else ('offline_status',) if '离线' in status else ('intermediate_status',))
+                status, hostname = client_data.get('status', '未知'), client_data.get('name', '未知')
+                health = client_data.get('disk_health', '未知')
+                ip = client_data.get('ip', '未知')
+
+                if ip and ip != '未知':
+                    self.ip_to_mac[ip] = mac_norm
+
+                last_file = client_data.get('last_boot_file', client_data.get('last_wim', ''))
+                self.mac_to_last_boot_file[mac_norm] = last_file
+
+                tags = ('online_status',) if '在线' in status else ('offline_status',) if '离线' in status else ('intermediate_status',)
+                tags += ('health_ok',) if health.upper() == 'OK' else ('health_neutral',) if health.upper() in ['UNKNOWN', 'N/A', '未知'] else ('health_bad',)
                 values = (seq, client_data.get('firmware', '未知'), f"{self.CLIENT_SYMBOL} {hostname}".strip(), ip, mac_norm, status, health, client_data.get('net_speed', '未知'))
                 iid = self.tree.insert('', 0, values=values, tags=tags); self.mac_to_iid[mac_norm] = iid
             self.client_counter = max_seq
@@ -802,16 +789,18 @@ class ClientManager:
             if len(vals) == 8:
                 seq, firmware, name_with_symbol, ip, mac, status, health, speed = vals
                 mac_norm = self._normalize_mac(mac)
+
+                if mac_norm == '00-00-00-00-00-00':
+                    continue
+
+                if not mac_norm or mac_norm == PROBE_MAC or mac_norm in saved_macs: continue
+                saved_macs.add(mac_norm)
                 clean_name = name_with_symbol.lstrip(f"{self.CLIENT_SYMBOL} ").strip()
-                
-                section_name = f"UNASSIGNED_{seq}" if mac_norm == '00-00-00-00-00-00' else (mac_norm if mac_norm and mac_norm != PROBE_MAC and mac_norm not in saved_macs else "")
-                if not section_name: continue
-                if mac_norm != '00-00-00-00-00-00': saved_macs.add(mac_norm)
-                
-                config[section_name] = {
-                    'seq': str(seq), 'firmware': str(firmware), 'name': clean_name, 'ip': str(ip), 'mac': mac_norm,
-                    'status': str(status), 'last_boot_file': self.mac_to_last_boot_file.get(mac_norm, ''),
-                    'disk_health': str(health), 'net_speed': str(speed)
+
+                last_boot_file = self.mac_to_last_boot_file.get(mac_norm, '')
+                config[mac_norm] = {
+                    'seq': str(seq), 'firmware': str(firmware), 'name': clean_name, 'ip': str(ip),
+                    'status': str(status), 'last_boot_file': last_boot_file, 'disk_health': str(health), 'net_speed': str(speed)
                 }
         try:
             with open(CONFIG_INI_FILENAME, 'w', encoding='utf-8') as f: config.write(f)
@@ -822,32 +811,27 @@ class ClientManager:
         iid = self.tree.identify_row(event.y)
         if iid and iid not in self.tree.selection():
             if not (event.state & 0x0004) and not (event.state & 0x0001): self.tree.selection_set(iid)
+        selection_count, has_any_clients = len(self.tree.selection()), bool(self.tree.get_children())
+        menu, item_state = tk.Menu(self.root, tearoff=0), 'normal' if selection_count > 0 else 'disabled'
         
-        selection_count = len(self.tree.selection())
-        has_any_clients = bool(self.tree.get_children())
-        menu = tk.Menu(self.root, tearoff=0)
-        
-        item_state = 'normal' if selection_count > 0 else 'disabled'
-        single_item_state = 'normal' if selection_count == 1 else 'disabled'
+    
 
         menu.add_command(label="唤醒 (WOL)", command=self._wake_on_lan_command, state=item_state)
         menu.add_separator()
-       
+        menu.add_command(label="批量添加客户机...", command=self._open_batch_add_dialog, state='normal')
+        menu.add_separator()
         operate_submenu = tk.Menu(menu, tearoff=0)
+
         for item in self.menu_config:
             cmd = lambda p=item['path'], a=item['args']: self._execute_custom_command(p, a)
             operate_submenu.add_command(label=item['name'], command=cmd)
         
         menu.add_cascade(label="操作客户机", menu=operate_submenu, state=item_state)
-        menu.add_command(label="为文件制作BT种子...", command=self._create_torrent_command)
-        menu.add_command(label="配置操作菜单...", command=self._open_menu_config_window)
+        menu.add_command(label="为文件制作BT种子...", command=self._create_torrent_command, state='normal')
+        menu.add_command(label="配置操作菜单...", command=self._open_menu_config_window, state='normal')
+
         if self.menu_config: menu.add_separator()
-        menu.add_command(label="批量添加客户机...", command=self._open_batch_add_dialog)
-        menu.add_separator()
-        menu.add_command(label="编辑客户端...", command=self._edit_selected_client, state=single_item_state)
-        menu.add_command(label="清除MAC (设为待分配)", command=self._clear_selected_macs, state=item_state)
-        
-        menu.add_command(label="iPXEFM管理", command=self._open_ipxefm_manager)
+        menu.add_command(label="iPXEFM管理", command=self._open_ipxefm_manager, state='normal')
         menu.add_separator()
         
         select_state = 'normal' if has_any_clients else 'disabled'
@@ -855,60 +839,110 @@ class ClientManager:
         menu.add_command(label="反选", command=self._invert_selection, state=select_state)
         menu.add_command(label="导出选中项...", command=self._export_selection, state=item_state)
         menu.add_separator()
-
         delete_label = f"删除选中的客户机 ({selection_count})" if selection_count > 1 else "删除这台客户机"
         menu.add_command(label=delete_label, command=self._delete_selected_client, state=item_state)
         menu.add_separator()
-        
-        menu.add_command(label="清空全部客户机", command=self._clear_all_clients, state=select_state)
+        menu.add_command(label="清空全部客户机", command=self._clear_all_clients, state='normal' if has_any_clients else 'disabled')
         menu.post(event.x_root, event.y_root)
 
     def _open_batch_add_dialog(self):
         dialog = BatchAddClientDialog(self.root)
         if dialog.result:
-            for client_data in dialog.result:
+            generated_clients = dialog.result
+            
+            for client_data in generated_clients:
                 self.client_counter += 1
-                values = (self.client_counter, '未知', f"{self.CLIENT_SYMBOL} {client_data['name']}", client_data['ip'], client_data['mac'], client_data['status'], '未知', '未知')
+                values = (
+                    self.client_counter,
+                    '未知',
+                    f"{self.CLIENT_SYMBOL} {client_data['name']}",
+                    client_data['ip'],
+                    client_data['mac'],
+                    client_data['status'],
+                    '未知',
+                    '未知'
+                )
                 self.tree.insert('', 'end', values=values, tags=('placeholder_client',))
             
             try:
                 with open(BATCH_CLIENT_OUTPUT_FILE, 'w', encoding='utf-8') as f:
-                    for client in dialog.result: f.write(f"{client['name']}\t{client['ip']}\t{client['mac']}\n")
-                messagebox.showinfo("生成成功", f"已成功生成 {len(dialog.result)} 个客户机，并写入到 '{BATCH_CLIENT_OUTPUT_FILE}' 文件中。", parent=self.root)
+                    for client in generated_clients:
+                        f.write(f"{client['name']}\t{client['ip']}\t{client['mac']}\n")
+                
+                messagebox.showinfo(
+                    "生成成功", 
+                    f"已成功生成 {len(generated_clients)} 个客户机，并写入到 '{BATCH_CLIENT_OUTPUT_FILE}' 文件中。",
+                    parent=self.root
+                )
             except Exception as e:
-                messagebox.showerror("文件写入失败", f"无法写入到 '{BATCH_CLIENT_OUTPUT_FILE}':\n{e}", parent=self.root)
-            self._save_config_to_ini()
-
+                messagebox.showerror(
+                    "文件写入失败",
+                    f"无法写入到 '{BATCH_CLIENT_OUTPUT_FILE}':\n{e}",
+                    parent=self.root
+                )
+# ... (其他方法，如 _create_torrent, _open_ipxefm_manager 等保持不变) ...
     def _create_torrent_command(self):
         http_root = self.settings.get('http_root', '.')
         http_port = self.settings.get('http_port', 80)
         server_ip = self.settings.get('server_ip', '127.0.0.1')
         tracker_port = 6969
+
         if not self.settings.get('http_enabled', False):
-            messagebox.showerror("操作失败", "无法创建种子，因为 HTTP 服务未启用。", parent=self.root); return
+            messagebox.showerror("操作失败", "无法创建种子，因为 HTTP 服务未启用。", parent=self.root)
+            return
+
         http_root_abs = os.path.abspath(http_root)
-        filepath = filedialog.askopenfilename(title="请选择一个文件以制作种子", initialdir=http_root_abs)
-        if not filepath: return
+        filepath = filedialog.askopenfilename(
+            title="请选择一个文件以制作种子 (该文件必须位于HTTP根目录内,可以重命名为bt.torrent直接下发)",
+            initialdir=http_root_abs
+        )
+        if not filepath:
+            return
+
         filepath_abs = os.path.abspath(filepath)
         if not filepath_abs.startswith(http_root_abs):
-            messagebox.showerror("路径错误", f"所选文件必须位于 HTTP 根目录内。\n\n根目录: {http_root_abs}", parent=self.root); return
+            messagebox.showerror(
+                "路径错误",
+                f"所选文件必须位于 HTTP 根目录内才能制作Web Seed种子。\n\n"
+                f"HTTP 根目录: {http_root_abs}\n"
+                f"您选择了: {filepath_abs}",
+                parent=self.root
+            )
+            return
+
         try:
             if not self.tracker_instance or not self.tracker_instance['thread'].is_alive():
                 if self.logger: self.logger(f"正在启动内置 BitTorrent Tracker (端口: {tracker_port})...", "INFO")
                 self.tracker_instance = bt.start_tracker(host='0.0.0.0', port=tracker_port)
-                if not self.tracker_instance: messagebox.showerror("Tracker 启动失败", f"无法在端口 {tracker_port} 上启动 Tracker 服务。", parent=self.root); return
+                if not self.tracker_instance:
+                    messagebox.showerror("Tracker 启动失败", f"无法在端口 {tracker_port} 上启动 Tracker 服务。", parent=self.root)
+                    return
                 time.sleep(0.5)
         except Exception as e:
-            messagebox.showerror("Tracker 启动异常", f"启动 Tracker 时发生错误: {e}", parent=self.root); return
+            messagebox.showerror("Tracker 启动异常", f"启动 Tracker 时发生错误: {e}", parent=self.root)
+            if self.logger: self.logger(f"启动 Tracker 时发生错误: {e}", "ERROR")
+            return
+
         tracker_announce_url = f"http://{server_ip}:{tracker_port}/announce"
         relative_path = os.path.relpath(filepath_abs, http_root_abs).replace('\\', '/')
         web_seed_url = f"http://{server_ip}:{http_port}/{relative_path}"
+
         try:
             if self.logger: self.logger(f"正在为 '{filepath_abs}' 创建种子文件...", "INFO")
             torrent_path, info_hash = bt.create_torrent_file(filepath_abs, tracker_announce_url, web_seed_url)
-            messagebox.showinfo("创建成功", f"种子文件已成功创建！\n\n路径: {torrent_path}\nInfo Hash: {info_hash}", parent=self.root)
+            messagebox.showinfo(
+                "创建成功",
+                f"种子文件已成功创建！\n\n"
+                f"保存路径: {torrent_path}\n"
+                f"Tracker URL: {tracker_announce_url}\n"
+                f"Info Hash: {info_hash}\n\n"
+                f"内置 Tracker 正在运行，您可将此种子用于 aria2c 等客户端进行P2P下载。",
+                parent=self.root
+            )
+            if self.logger: self.logger(f"种子文件 '{os.path.basename(torrent_path)}' 创建成功。Infohash: {info_hash}", "INFO")
         except Exception as e:
             messagebox.showerror("创建失败", f"创建种子文件时发生错误: {e}", parent=self.root)
+            if self.logger: self.logger(f"创建种子文件时发生错误: {e}", "ERROR")
 
     def _open_ipxefm_manager(self): IPXEFileManager(self.root)
     def _select_all(self): self.tree.selection_set(self.tree.get_children(''))
@@ -919,7 +953,7 @@ class ClientManager:
     def _export_selection(self):
         ordered_selection = [item for item in self.selection_order if item in self.tree.selection()]
         if not ordered_selection: return
-        filepath = filedialog.asksaveasfilename(title="导出选中项", initialfile="exported_clients.txt", defaultextension=".txt", filetypes=[("Text Documents", "*.txt")])
+        filepath = filedialog.asksaveasfilename(title="导出选中项", initialfile="exported_clients.txt", defaultextension=".txt", filetypes=[("Text Documents", "*.txt"), ("All Files", "*.*")])
         if not filepath: return
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -944,46 +978,6 @@ class ClientManager:
     def _open_menu_config_window(self): MenuConfigWindow(self.root, self, self.menu_config)
     def update_menu_config(self, new_config): self.menu_config = new_config; self._save_config_to_ini(); messagebox.showinfo("配置已保存", "菜单配置已更新。", parent=self.root)
 
-    def _edit_selected_client(self):
-        """打开对话框以编辑所选单个客户端的名称和IP。"""
-        selection = self.tree.selection()
-        if len(selection) != 1: return
-        
-        iid = selection[0]
-        current_values = self.tree.item(iid, 'values')
-        clean_name = current_values[2].lstrip(self.CLIENT_SYMBOL).strip()
-        current_ip, current_mac = current_values[3], current_values[4]
-        
-        dialog = ClientEditDialog(self.root, {'name': clean_name, 'ip': current_ip})
-        if dialog.result:
-            new_name, new_ip = dialog.result['name'], dialog.result['ip']
-            updated_values = list(current_values); updated_values[2], updated_values[3] = f"{self.CLIENT_SYMBOL} {new_name}", new_ip
-            self.tree.item(iid, values=tuple(updated_values))
-            with self.map_lock:
-                if current_ip in self.ip_to_mac and self.ip_to_mac[current_ip] == current_mac:
-                    del self.ip_to_mac[current_ip]
-                self.ip_to_mac[new_ip] = current_mac
-            self._save_config_to_ini()
-            if self.logger: self.logger(f"客户端 {current_mac} 的信息已更新。新名称: {new_name}, 新IP: {new_ip}", "INFO")
-
-    def _clear_selected_macs(self):
-        """将所选客户端的MAC地址清除，使其返回待分配状态。"""
-        selection = self.tree.selection()
-        if not selection: return
-        msg = f"您确定要清除这 {len(selection)} 个客户端的MAC地址吗？\n\n此操作将使它们变回“待分配”状态，可以被新的客户端认领。"
-        if messagebox.askyesno("确认操作", msg, parent=self.root, icon='warning'):
-            for iid in selection:
-                current_values = list(self.tree.item(iid, 'values'))
-                old_mac = current_values[4]
-                if old_mac == '00-00-00-00-00-00': continue
-                current_values[4] = '00-00-00-00-00-00'
-                current_values[5] = '离线 [待分配]'
-                self.tree.item(iid, values=tuple(current_values), tags=('placeholder_client',))
-                with self.map_lock:
-                    if old_mac in self.mac_to_iid: del self.mac_to_iid[old_mac]
-            self._save_config_to_ini()
-            if self.logger: self.logger(f"已清除 {len(selection)} 个客户端的MAC地址。", "INFO")
-
     def _delete_selected_client(self):
         sel_iids = self.tree.selection(); count = len(sel_iids)
         if not sel_iids: return
@@ -991,17 +985,16 @@ class ClientManager:
         if messagebox.askyesno("确认删除", msg, parent=self.root):
             for iid in sel_iids:
                 mac_norm = self._normalize_mac(self.tree.item(iid, 'values')[4])
-                with self.map_lock:
-                    if mac_norm in self.mac_to_iid: del self.mac_to_iid[mac_norm]
-                    if mac_norm in self.mac_to_last_boot_file: del self.mac_to_last_boot_file[mac_norm]
+                if mac_norm in self.mac_to_iid: del self.mac_to_iid[mac_norm]
+                if mac_norm in self.mac_to_last_boot_file: del self.mac_to_last_boot_file[mac_norm]
                 self.tree.delete(iid)
             self._save_config_to_ini()
 
     def _clear_all_clients(self):
         if not self.tree.get_children(): return
         if messagebox.askyesno("确认清空", "警告：这将从列表和配置文件中永久删除所有客户机记录！\n菜单配置将保留。\n\n您确定要继续吗?", icon='warning', parent=self.root):
-            with self.map_lock:
-                self.mac_to_iid.clear(); self.mac_to_last_boot_file.clear()
+            self.mac_to_iid.clear()
+            self.mac_to_last_boot_file.clear()
             for iid in self.tree.get_children(''): self.tree.delete(iid)
             self.client_counter = 0; self._save_config_to_ini()
 
@@ -1024,8 +1017,10 @@ class ClientManager:
             success, _ = self._send_wol_packet(mac)
             if success: success_count += 1
             else: failed_macs.append(mac)
-        message = f"已向 {success_count} 台客户机发送唤醒指令。" + (f"\n\n失败 {len(failed_macs)} 台。" if failed_macs else "")
-        messagebox.showinfo("操作完成", message, parent=self.root)
+        if success_count > 0:
+            message = f"已向 {success_count} 台客户机发送唤醒指令。" + (f"\n\n失败 {len(failed_macs)} 台。" if failed_macs else "")
+            messagebox.showinfo("操作完成", message, parent=self.root)
+        else: messagebox.showerror("操作失败", "未能向任何选定的客户机发送唤醒指令。", parent=self.root)
 
     def handle_dhcp_request(self, mac, ip, state_hint, firmware_type=None, hostname=None):
         mac_norm = self._normalize_mac(mac)
@@ -1050,48 +1045,71 @@ class ClientManager:
 
     def handle_file_transfer_start(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
-        if mac: self._update_ui(mac, {'status': f"{self.STATUS_MAP['transfer_wim']}({os.path.basename(filename)})"})
+        if mac:
+            self._update_ui(mac, {'status': f"{self.STATUS_MAP['transfer_wim']}({os.path.basename(filename)})"})
 
     def handle_file_transfer_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
         basename = os.path.basename(filename)
+
+        BOOT_IMAGE_EXTENSIONS = {'.wim', '.iso', '.vhd', '.img', '.ima', '.ramos', '.install'}
+        clean_basename, _ = os.path.splitext(basename)
         _, file_ext = os.path.splitext(filename.lower())
-        if mac and file_ext in {'.wim', '.iso', '.vhd', '.img', '.ima', '.ramos', '.install'}:
-            if os.path.splitext(basename)[0].lower() == 'install':
-                display_name = os.path.basename(os.path.dirname(filename)) or basename
+
+        if mac and file_ext in BOOT_IMAGE_EXTENSIONS:
+            if clean_basename.lower() == 'install':
+                parent_dir_name = os.path.basename(os.path.dirname(filename))
+                display_name = parent_dir_name if parent_dir_name else basename
+                self.mac_to_last_boot_file[mac] = display_name
+                self._update_ui(mac, {'status': f"启动({display_name})"})
             else:
-                display_name = basename
-            self.mac_to_last_boot_file[mac] = display_name
-            self._update_ui(mac, {'status': f"启动({display_name})"})
-        elif mac: self._update_ui(mac, {'status': f"启动({basename})"})
+                self.mac_to_last_boot_file[mac] = basename
+                self._update_ui(mac, {'status': f"启动({basename})"})
+
+        elif mac:
+            self._update_ui(mac, {'status': f"启动({basename})"})
 
     def handle_file_upload_complete(self, client_ip, filename):
         mac = self._get_mac_from_ip(client_ip)
-        if not mac: return
-        update_data = {'status': f"在线 [{self.mac_to_last_boot_file.get(mac)}]" if self.mac_to_last_boot_file.get(mac) else "在线[本地启动]"}
+        if not mac:
+            if self.logger: self.logger(f"收到来自未知IP {client_ip} 的上传，无法更新UI。", "WARNING")
+            return
+        update_data = {}
+        last_boot_file = self.mac_to_last_boot_file.get(mac)
+        if last_boot_file:
+            update_data['status'] = f"在线 [{last_boot_file}]"
+        else:
+            update_data['status'] = "在线[本地启动]"
+
         tftp_root = self.settings.get('tftp_root', '.') if self.settings else '.'
         json_path = os.path.join(tftp_root, 'client', f"{client_ip}")
-        if not os.path.exists(json_path): self._update_ui(mac, update_data); return
+        if not os.path.exists(json_path):
+            if self.logger: self.logger(f"健康报告文件未找到: {json_path}", "DEBUG")
+            self._update_ui(mac, update_data)
+            return
         try:
             with open(json_path, 'r', encoding='utf-8') as f: data = json.load(f)
-            physical_disks = [d for d in data.get('Disks', []) if 'physicaldrive' in d.get('Path', '').lower()]
-            if not physical_disks: update_data['disk_health'] = "N/A"
+            physical_disks = [d for d in data.get('Disks', []) if 'Path' in d and 'physicaldrive' in d['Path'].lower()]
+            if not physical_disks:
+                update_data['disk_health'] = "N/A"
             else:
                 health_statuses = [d.get("Health Status", "Unknown") for d in physical_disks]
                 bad_statuses = [s for s in health_statuses if s.upper() not in ['OK', 'UNKNOWN']]
                 if bad_statuses: update_data['disk_health'] = ', '.join(set(bad_statuses))
-                else: update_data['disk_health'] = "OK" if 'OK' in health_statuses else "Unknown"
-            
+                elif 'Unknown' in health_statuses: update_data['disk_health'] = "Unknown"
+                else: update_data['disk_health'] = "OK"
             adapters = [a for a in data.get('Network', []) if 'loopback' not in a.get('Description', '').lower()]
             active_ethernet = sorted([a for a in adapters if a.get('Type') == 'Ethernet' and a.get('Status') == 'Active'], key=lambda x: int(x.get('Transmit Link Speed', 0)), reverse=True)
             target_adapter = active_ethernet[0] if active_ethernet else (adapters[0] if adapters else None)
-            if not target_adapter: update_data['net_speed'] = "N/A"
+            if not target_adapter:
+                update_data['net_speed'] = "N/A"
             else:
                 speed_bps = int(target_adapter.get('Transmit Link Speed', 0))
                 if speed_bps >= 10**9: update_data['net_speed'] = f"{speed_bps / 10**9:.0f} Gbps"
                 elif speed_bps >= 10**6: update_data['net_speed'] = f"{speed_bps / 10**6:.0f} Mbps"
                 else: update_data['net_speed'] = "N/A"
-        except Exception as e:
+            if self.logger: self.logger(f"从 {json_path} 为 {mac} 加载健康信息", "INFO")
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
             if self.logger: self.logger(f"处理健康报告 {json_path} 时出错: {e}", "ERROR")
         self._update_ui(mac, update_data)
 
