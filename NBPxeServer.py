@@ -253,12 +253,13 @@ Boot from Local Disk, , 0000, 0.0.0.0
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXEFM(txt), ipxeboot.txt, 8001, %tftpserver%
 List Files, %dynamicboot%=ipxefm, 0001, %tftpserver%
-Bind this PC, %dynamicboot%=whoami, 8002, %tftpserver%
+Bind PC, %dynamicboot%=whoami, 8002, %tftpserver%
 NBPE(WIM), %dynamicboot%=/newbeeplus.wim, 8003, %tftpserver%
 NBPE(ISO), %dynamicboot%=/newbeeplus.iso, 8004, %tftpserver%
+GRUBFM, %dynamicboot%=/netgrubfm.efi, 8007, %tftpserver%
 netboot, https://boot.netboot.xyz, 8005, %tftpserver%
 G4E, g4e.efi, 8006, %tftpserver%
-GrubFM, netgrubfm.efi, 8007, %tftpserver%
+
 '''
     }
     config['DHCPOptions'] = {
