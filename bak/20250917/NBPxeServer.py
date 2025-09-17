@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from nb_pxe_init import dynamic
+import dynamic
 import socket
 import struct
 import sys
@@ -22,9 +22,9 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 from urllib.parse import urlparse, parse_qs
 
-from nb_pxe_init import option as dhcp_option_handler
-from nb_pxe_init.option import EXAMPLE_OPTIONS
-from nb_pxe_init.client import ClientManager
+import option as dhcp_option_handler
+from option import EXAMPLE_OPTIONS
+from client import ClientManager
 
 # ... (log_message, INI_FILENAME, SETTINGS, get_mac_address, get_all_ips, etc. 保持不变) ...
 log_queue = queue.Queue()
@@ -252,7 +252,6 @@ Boot from Local Disk, , 0000, 0.0.0.0
         'prompt': 'Press F8 for iPXE Boot Menu ...',
         'items': f'''; 示例: 菜单文本, 启动文件, 类型(4位Hex), 服务器IP
 iPXE (iPXEFM_Menu), ipxeboot.txt, 8001, %tftpserver%
-iPXE_File_Manager, %dynamicboot%=ipxefm, 0001, %tftpserver%
 Bind_Client_IP, %dynamicboot%=whoami, 8002, %tftpserver%
 newbeeplus.wim, %dynamicboot%=/newbeeplus.wim, 8003, %tftpserver%
 newbeeplus.iso, %dynamicboot%=/newbeeplus.iso, 8004, %tftpserver%
