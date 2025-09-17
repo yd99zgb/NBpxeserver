@@ -43,7 +43,7 @@ iseq ${{platform}} pcbios  && initrd ${{booturl}}/app/wimboot/bootmgr  bootmgr |
 iseq ${{platform}} efi  && initrd -n bootx64.efi ${{booturl}}/app/wimboot/bootmgfw.efi bootx64.efi ||
 initrd ${{booturl}}/app/wimboot/BCD BCD ||
 initrd ${{booturl}}/app/wimboot/boot.sdi  boot.sdi ||
-initrd ${{booturl}}${{bootfile}} boot.wim ||
+initrd -n boot.wim ${{booturl}}${{bootfile}} boot.wim ||
 echo Starting Windows PE...
 boot || goto failed
 :failed
