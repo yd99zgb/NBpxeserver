@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 import configparser
 
 # 模块配置，由主程序初始化
@@ -93,14 +93,10 @@ def initialize_dynamic_scripting(settings: dict, client_manager_instance=None):
     从主服务器接收配置和 ClientManager 实例并初始化本模块。
     """
     global _SERVER_CONFIG, _CLIENT_MANAGER
-    _SERVER_CONFIG['server_ip'] = settings.get('server_ip', '127.0.0.1')
-    _SERVER_CONFIG['http_port'] = settings.get('http_port', 80)
-    _SERVER_CONFIG['http_root'] = settings.get('http_root', '.')
-    _SERVER_CONFIG['subnet_mask'] = settings.get('subnet_mask', '')
-    _SERVER_CONFIG['router_ip'] = settings.get('router_ip', '')
-    _SERVER_CONFIG['dns_server_ip'] = settings.get('dns_server_ip', '')
-    _SERVER_CONFIG['http_uri'] = f"http://{_SERVER_CONFIG['server_ip']}:{_SERVER_CONFIG['http_port']}"
-    _SERVER_CONFIG['boot_url'] = f"{_SERVER_CONFIG['server_ip']}:{_SERVER_CONFIG['http_port']}"
+    # 复制所有设置，以便我们可以访问PXE菜单配置
+    _SERVER_CONFIG = settings.copy()
+    _SERVER_CONFIG['http_uri'] = f"http://{settings.get('server_ip', '127.0.0.1')}:{settings.get('http_port', 80)}"
+    _SERVER_CONFIG['boot_url'] = f"{settings.get('server_ip', '127.0.0.1')}:{settings.get('http_port', 80)}"
     _CLIENT_MANAGER = client_manager_instance
 
     log_msg = f"Dynamic scripting module updated. HTTP URI: {_SERVER_CONFIG['http_uri']}"
@@ -227,15 +223,80 @@ def _generate_all_files_menu(http_uri: str) -> str:
     script.extend([
         "",
         "choose --timeout 30000 selected || exit",
-        # =======================[ 修改点 ]=======================
         # 使用 :uristring 来确保 ${selected} 的值被正确地URL编码
         f"chain {http_uri}/dynamic.ipxe?bootfile=${{selected:uristring}}",
-        # =======================[ 修改结束 ]=======================
         "exit"
     ])
 
     return "\n".join(script)
 
+# =======================[ 新增：iPXE菜单生成器 ]=======================
+def _generate_ipxe_menu_from_config() -> str:
+    """
+    读取 [PXEMenuIPXE] 配置并生成一个动态的 iPXE 脚本菜单。
+    """
+    if not _SERVER_CONFIG.get('pxe_menu_ipxe_enabled', False):
+        return "#!ipxe\necho iPXE menu is disabled on the server.\nsanboot --no-describe --drive 0x80"
+
+    prompt = _SERVER_CONFIG.get('pxe_menu_ipxe_prompt', 'iPXE Boot Menu')
+    # iPXE 的超时单位是毫秒
+    timeout_ms = _SERVER_CONFIG.get('pxe_menu_ipxe_timeout', 6) * 1000
+    items_str = _SERVER_CONFIG.get('pxe_menu_ipxe_items', '')
+    http_uri = _SERVER_CONFIG.get('http_uri', 'http://127.0.0.1')
+    
+    script = ["#!ipxe", "", f"menu {prompt}"]
+    
+    item_actions = {}
+    item_counter = 0
+
+    for line in items_str.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith(';'):
+            continue
+        
+        parts = [p.strip() for p in line.split(',', 3)]
+        if len(parts) == 4:
+            menu_text, boot_file, _, _ = parts
+            item_name = f"item_{item_counter}"
+            item_counter += 1
+            
+            script.append(f"item {item_name} {menu_text}")
+
+            action = ""
+            if not boot_file or boot_file.strip() == "":
+                action = "sanboot --no-describe --drive 0x80"
+            elif '%dynamicboot%' in boot_file:
+                # 示例: %dynamicboot%=/newbeeplus.wim
+                # 转换成: chain http://server/dynamic.ipxe?bootfile=/newbeeplus.wim
+                action_param = boot_file.split('=', 1)[1]
+                # 对参数进行URL编码以支持特殊字符
+                encoded_param = urlencode({'bootfile': action_param})
+                action = f"chain {http_uri}/dynamic.ipxe?{encoded_param}"
+            elif boot_file.startswith(('http://', 'https://')):
+                action = f"chain {boot_file}"
+            else:
+                # 假定为本地HTTP服务器上的常规文件
+                # 使用 :uristring 进行编码，确保文件名中的空格等特殊字符被正确处理
+                action = f"chain {http_uri}/{boot_file.lstrip('/')}"
+            
+            item_actions[item_name] = action
+
+    script.append(f"choose --timeout {timeout_ms} selected || exit")
+    
+    # 使用 goto 跳转到选择的项对应的标签
+    script.append("goto ${selected}")
+    script.append("")
+
+    for name, action in item_actions.items():
+        script.append(f":{name}")
+        script.append(f"{action} ||") # 如果命令失败，则允许脚本继续
+        script.append("goto MENU_END") # 执行完后跳出
+        script.append("")
+
+    script.append(":MENU_END")
+    script.append("exit")
+    
+    return "\n".join(script)
 
 def _generate_client_info_script(client_ip: str) -> str:
     """
@@ -323,6 +384,8 @@ def generate_dynamic_script(params: dict, client_ip: str) -> str:
         bootfile = unquote(bootfile).strip('"')
         
         # 2a. 特殊功能关键字 (返回完整脚本)
+        if bootfile.lower() == 'ipxemenu':
+            return _generate_ipxe_menu_from_config()
         if bootfile.lower() == 'getmyxml':
             return _generate_unattend_xml(client_ip)
         if bootfile.lower() == 'getmyip':
@@ -336,25 +399,11 @@ def generate_dynamic_script(params: dict, client_ip: str) -> str:
         file_ext = os.path.splitext(bootfile)[1].lower()
         type_name = CHAINLOAD_MAP.get(file_ext)
 
-        # =======================[ 修改开始 ]=======================
-        # 此处是核心修正区域
         if type_name:
-            # 获取 iPXE 客户端需要使用的 booturl 地址
             boot_url_value = _SERVER_CONFIG.get('boot_url', '127.0.0.1:80')
-            
-            # 生成链式加载到特定类型处理脚本的指令片段
             chain_script = _generate_chainload_script(bootfile, type_name)
-
-            # 正确地组合最终脚本:
-            # 1. iPXE 脚本必须以 #!ipxe 开头。
-            # 2. 必须先定义 booturl 变量，因为 HEADER 部分会用到它 (例如 themes 路径)。
-            # 3. 然后是全局设置 HEADER。
-            # 4. 最后是链式加载指令。
-            
-            # 从 HEADER 中移除它自带的 #!ipxe，以便我们能控制脚本的开头
             header_body = IPXEFM_GLOBAL_SETTINGS_HEADER.lstrip("#!ipxe").strip()
             
-            # 组装最终脚本
             final_script = (
                 "#!ipxe\n"
                 f"set booturl {boot_url_value}\n"
@@ -362,7 +411,6 @@ def generate_dynamic_script(params: dict, client_ip: str) -> str:
                 f"{chain_script}"
             )
             return final_script
-        # =======================[ 修改结束 ]=======================
         else:
             # 如果文件类型不支持，返回一个错误提示脚本
             return f"#!ipxe\necho Unsupported file type: {bootfile}\nsleep 5\nchain {http_uri}/dynamic.ipxe?bootfile=ipxefm"
