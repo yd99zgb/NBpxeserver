@@ -10,83 +10,7 @@ _SERVER_CONFIG = {}
 _CLIENT_MANAGER = None
 
 # 定义所有支持扫描的启动文件扩展名
-SUPPORTED_EXTENSIONS = {'.wim', '.iso', '.efi', '.vhd', '.vhdx', '.vmdk', '.dsk', '.ima', '.img', '.ramos', '.iqn'}
-
-# =======================[ iPXE全局设置头 ]=======================
-# This block of iPXE script will be prepended to all dynamic file boot requests.
-# It sets up the environment for your iPXEFM menu system.
-IPXEFM_GLOBAL_SETTINGS_HEADER = """#!ipxe
-
-##############中级止步!高级秃顶用户修改区域######
-#修改iscsi server的地址(默认是next-server)
-#set iscsiurl 169.254.1.1
-#修改本菜单的名称(默认是/ipxeboot.txt)
-set scriptfile /ipxeboot.txt
-#修改默认启动的文件类型(wim iso img)
-set ext-default wim
-#修改各类型默认启动的文件序号(0-9)
-set wimbootfile-default 1
-set isobootfile-default 2
-set imgbootfile-default 1
-set vhdbootfile-default 1
-set iqnbootfile-default 1
-set ramosbootfile-default 1
-#设置wim启动默认方式
-set pcbioswimbootmode wimboot #(不注入文件)
-#set pcbioswimbootmode startup.bat #(注入默认的startup.bat文件)
-set efiwimbootmode wimboot
-#set efiwimbootmode  startup.bat #(注入默认的startup.bat文件)
-
-#设置iso启动默认方式
-set pcbiosisobootmode pcbiosisowithmemdisk #其它方式有isowithgrub isowithmemdisk pcbiosisowithsanboot
-set efiisobootmode efiisowithimgboot #其它方式有efiisowithgrubmemrt efiisowithimgboot efiisowithgrub efiisowithsanboot
-
-#设置img启动默认方式
-set pcbiosimgbootmode memdiskimg #其它方式有pcbiossanbootimg pcbiosbootimgfdd pcbiosbootimghdd imgwithimgboot memdiskimg
-set efiimgbootmode efibootimg #方式有其它efisanbootimg efibootimg
- 
-#设置vhd启动默认方式
-set pcbiosvhdbootmode ${platform}sanbootvhd
-set efivhdbootmode ${platform}sanbootvhd
-
-#设置IQN启动默认方式
-set pcbiosiqnbootmode ${platform}bootpe
-set efiiqnbootmode ${platform}install
-
-#设置ramos[ramos]启动默认方式
-set pcbiosramosbootmode ${platform}ramos
-set efiramosbootmode ${platform}ramos
-
-set ext-timeout 8000
-set bootfile-timeout 8000
-##########
-#设置分辨率图片                           
-isset ${x} || set x 800   
-isset ${y} || set y 600     
-isset ${bg} || set bg 800x600.png        
-isset ${ld} || set ld loading.png                              
-set prefix /Boot/ipxefm
-set themes http://${booturl}/Boot/ipxefm/themes/jnygc
-set quiet 1 #静默启动，1打开，注释掉不打开
-console --x ${x} -y ${y} ||
-console --picture ${themes}/${bg} --left 32 --right 32 --top 32 --bottom 48 ||
-"""
-
-# =======================[ 扩展名到类型脚本的映射 ]=======================
-CHAINLOAD_MAP = {
-    '.wim': 'wim',
-    '.iso': 'iso',
-    '.img': 'img',
-    '.ima': 'img',
-    '.efi': 'efi', # 增加了对 .efi 的直接处理
-    '.vhd': 'disk',
-    '.vhdx': 'disk',
-    '.vmdk': 'disk',
-    '.dsk': 'disk',
-    '.ramos': 'ramos',
-    '.iqn': 'iqn'
-}
-
+SUPPORTED_EXTENSIONS = {'.wim', '.iso', '.efi', '.vhd', '.ima', '.img'}
 
 def initialize_dynamic_scripting(settings: dict, client_manager_instance=None):
     """
@@ -95,47 +19,106 @@ def initialize_dynamic_scripting(settings: dict, client_manager_instance=None):
     global _SERVER_CONFIG, _CLIENT_MANAGER
     _SERVER_CONFIG['server_ip'] = settings.get('server_ip', '127.0.0.1')
     _SERVER_CONFIG['http_port'] = settings.get('http_port', 80)
-    _SERVER_CONFIG['http_root'] = settings.get('http_root', '.')
+    _SERVER_CONFIG['http_root'] = settings.get('http_root', '.') 
     _SERVER_CONFIG['subnet_mask'] = settings.get('subnet_mask', '')
     _SERVER_CONFIG['router_ip'] = settings.get('router_ip', '')
     _SERVER_CONFIG['dns_server_ip'] = settings.get('dns_server_ip', '')
     _SERVER_CONFIG['http_uri'] = f"http://{_SERVER_CONFIG['server_ip']}:{_SERVER_CONFIG['http_port']}"
-    _SERVER_CONFIG['boot_url'] = f"{_SERVER_CONFIG['server_ip']}:{_SERVER_CONFIG['http_port']}"
     _CLIENT_MANAGER = client_manager_instance
-
+    
     log_msg = f"Dynamic scripting module updated. HTTP URI: {_SERVER_CONFIG['http_uri']}"
     if _CLIENT_MANAGER:
         log_msg += " | ClientManager instance linked."
     print(log_msg)
 
 
-# =======================[ 通用Chainload脚本生成器 ]=======================
-def _generate_chainload_script(bootfile_path: str, type_name: str) -> str:
-    """
-    生成一个iPXE脚本片段，该脚本设置一个包含文件路径的变量，
-    然后链式加载到特定类型的处理脚本。
-    """
+def _generate_wim_boot_script(bootfile_path: str, http_uri: str) -> str:
+    """生成 WIM 文件的启动脚本。"""
     if not bootfile_path.startswith('/'):
         bootfile_path = '/' + bootfile_path
-    
-    # 对于 .efi 文件，直接使用 chain 命令
-    if type_name == 'efi':
-        return f"""
-chain http://${{booturl}}{bootfile_path} || goto failed
-:failed
-echo Failed to chainload EFI file!
-sleep 5
-chain http://${{booturl}}/dynamic.ipxe?bootfile=ipxefm
-"""
-    
-    # 对其他文件类型使用标准处理脚本
-    return f"""
+
+    return f"""#!ipxe
+# --- Dynamic WIM Boot Script ---
+set booturl {http_uri}
 set bootfile {bootfile_path}
-chain http://${{booturl}}/Boot/ipxefm/types/{type_name} || goto failed
+echo Booting Windows Image File...
+kernel ${{booturl}}/app/wimboot/wimboot gui || goto failed
+iseq ${{platform}} pcbios  && initrd ${{booturl}}/app/wimboot/bootmgr  bootmgr ||
+iseq ${{platform}} efi  && initrd -n bootx64.efi ${{booturl}}/app/wimboot/bootmgfw.efi bootx64.efi ||
+initrd ${{booturl}}/app/wimboot/BCD BCD ||
+initrd ${{booturl}}/app/wimboot/boot.sdi  boot.sdi ||
+initrd -n boot.wim ${{booturl}}${{bootfile}} boot.wim ||
+echo Starting Windows PE...
+boot || goto failed
 :failed
-echo Failed to chainload type handler!
+echo Boot failed! Returning to menu in 5 seconds...
 sleep 5
-chain http://${{booturl}}/dynamic.ipxe?bootfile=ipxefm
+chain ${{booturl}}/dynamic.ipxe?bootfile=ipxefm
+"""
+
+def _generate_iso_boot_script(bootfile_path: str, http_uri: str) -> str:
+    """[已恢复] 生成 ISO 文件的 imgboot 启动脚本。"""
+    if not bootfile_path.startswith('/'):
+        bootfile_path = '/' + bootfile_path
+        
+    return f"""#!ipxe
+# --- Dynamic ISO Boot Script ---
+set booturl {http_uri}
+set bootfile {bootfile_path}
+echo Booting ISO via imgboot...
+goto ${{platform}}
+:efi
+initrd -n boot.iso ${{booturl}}${{bootfile}} ||
+chain ${{booturl}}/app/efi/imgboot.efi || goto failed
+:pcbios
+kernel ${{booturl}}/app/pcbios/memdisk iso raw ||
+initrd ${{booturl}}${{bootfile}} || goto failed
+boot
+:failed
+echo Boot failed! Returning to menu in 5 seconds...
+sleep 5
+chain ${{booturl}}/dynamic.ipxe?bootfile=ipxefm
+"""
+
+def _generate_disk_image_boot_script(bootfile_path: str, http_uri: str) -> str:
+    """为 VHD, IMG, IMA 等生成通用的 imgboot/memdisk 启动脚本。"""
+    if not bootfile_path.startswith('/'):
+        bootfile_path = '/' + bootfile_path
+
+    return f"""#!ipxe
+# --- Dynamic Disk Image Boot Script ---
+set booturl {http_uri}
+set bootfile {bootfile_path}
+echo Booting Disk Image via imgboot...
+goto ${{platform}}
+:efi
+initrd -n boot.img ${{booturl}}${{bootfile}} ||
+chain ${{booturl}}/app/efi/imgboot.efi || goto failed
+:pcbios
+kernel ${{booturl}}/app/pcbios/memdisk raw ||
+initrd ${{booturl}}${{bootfile}} || goto failed
+boot
+:failed
+echo Boot failed! Returning to menu in 5 seconds...
+sleep 5
+chain ${{booturl}}/dynamic.ipxe?bootfile=ipxefm
+"""
+
+def _generate_efi_boot_script(bootfile_path: str, http_uri: str) -> str:
+    """[已恢复] 生成 EFI 文件的 chainload 启动脚本，并附加参数。"""
+    if not bootfile_path.startswith('/'):
+        bootfile_path = '/' + bootfile_path
+        
+    return f"""#!ipxe
+# --- Dynamic EFI Boot Script ---
+set booturl {http_uri}
+set bootfile {bootfile_path}
+echo Launching EFI application with proxydhcp parameter...
+chain ${{booturl}}${{bootfile}} proxydhcp=${{pxebs/next-server}} || goto failed
+:failed
+echo Boot failed! Returning to menu in 5 seconds...
+sleep 5
+chain ${{booturl}}/dynamic.ipxe?bootfile=ipxefm
 """
 
 def _generate_whoami_menu(http_uri: str) -> str:
@@ -166,7 +149,6 @@ def _generate_whoami_menu(http_uri: str) -> str:
     
     return "\n".join(script)
 
-
 def _perform_mac_binding(ip: str, mac: str) -> str:
     """执行MAC地址和IP的绑定操作。"""
     if not _CLIENT_MANAGER:
@@ -192,7 +174,6 @@ def _perform_mac_binding(ip: str, mac: str) -> str:
             "shell"
         )
 
-
 def _generate_all_files_menu(http_uri: str) -> str:
     """扫描HTTP目录并生成一个包含所有可启动文件的菜单。"""
     http_root = _SERVER_CONFIG.get('http_root')
@@ -205,12 +186,11 @@ def _generate_all_files_menu(http_uri: str) -> str:
             if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
                 full_path = os.path.join(root, file)
                 relative_path = os.path.relpath(full_path, http_root)
-                # 统一使用 / 作为路径分隔符，兼容所有系统
                 web_path = relative_path.replace(os.sep, '/')
                 boot_files.append(web_path)
     
     if not boot_files:
-        return "#!ipxe\necho No bootable files found in the HTTP directory.\nsleep 5\nsanboot --no-describe --drive 0x80"
+        return "#!ipxe\necho No bootable files (.wim, .iso, .efi, etc.) found in the HTTP directory.\nsleep 5\nsanboot --no-describe --drive 0x80"
 
     script = [
         "#!ipxe",
@@ -221,39 +201,49 @@ def _generate_all_files_menu(http_uri: str) -> str:
 
     boot_files.sort()
     for path in boot_files:
-        # 使用引号包围 item name，以支持带空格的文件名
         script.append(f"item \"{path}\" \"{path}\"")
 
     script.extend([
         "",
         "choose --timeout 30000 selected || exit",
-        # =======================[ 修改点 ]=======================
-        # 使用 :uristring 来确保 ${selected} 的值被正确地URL编码
-        f"chain {http_uri}/dynamic.ipxe?bootfile=${{selected:uristring}}",
-        # =======================[ 修改结束 ]=======================
+        f"chain {http_uri}/dynamic.ipxe?bootfile=${{selected}}",
         "exit"
     ])
 
     return "\n".join(script)
 
-
 def _generate_client_info_script(client_ip: str) -> str:
     """
     生成一个有效的 iPXE 脚本，该脚本使用客户端的网络和身份信息设置变量。
+    如果某个值找不到，则将其留空。
     """
     info = {
-        'pcname': '', 'ip': client_ip, 'mask': _SERVER_CONFIG.get('subnet_mask', ''),
-        'gateway': _SERVER_CONFIG.get('router_ip', ''), 'dns1': '', 'dns2': '', 'mac': ''
+        'pcname': '',
+        'ip': client_ip,
+        'mask': _SERVER_CONFIG.get('subnet_mask', ''),
+        'gateway': _SERVER_CONFIG.get('router_ip', ''),
+        'dns1': '',
+        'dns2': '',
+        'mac': ''
     }
+
+    # 解析DNS服务器 (可以是逗号分隔的)
     dns_servers = _SERVER_CONFIG.get('dns_server_ip', '').replace(' ', '').split(',')
-    if len(dns_servers) > 0 and dns_servers[0]: info['dns1'] = dns_servers[0]
-    if len(dns_servers) > 1 and dns_servers[1]: info['dns2'] = dns_servers[1]
+    if len(dns_servers) > 0 and dns_servers[0]:
+        info['dns1'] = dns_servers[0]
+    if len(dns_servers) > 1 and dns_servers[1]:
+        info['dns2'] = dns_servers[1]
+
+    # 从实时的 ClientManager 映射中获取 MAC 地址
+    mac_address = None
+    if _CLIENT_MANAGER and hasattr(_CLIENT_MANAGER, 'ip_to_mac'):
+        mac_address = _CLIENT_MANAGER.ip_to_mac.get(client_ip)
     
-    mac_address = _CLIENT_MANAGER.ip_to_mac.get(client_ip) if _CLIENT_MANAGER else None
-    
+    # 如果找到 MAC 地址，用它从 INI 配置文件中查找计算机名
     if mac_address:
         mac_norm = mac_address.upper().replace(':', '-')
         info['mac'] = mac_norm
+        
         CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
         if os.path.exists(CONFIG_INI_FILENAME):
             config = configparser.ConfigParser(interpolation=None)
@@ -261,26 +251,39 @@ def _generate_client_info_script(client_ip: str) -> str:
                 config.read(CONFIG_INI_FILENAME, encoding='utf-8')
                 if config.has_section(mac_norm):
                     info['pcname'] = config.get(mac_norm, 'name', fallback='')
-            except Exception: pass
+            except Exception:
+                pass # 如果配置文件读取失败，则静默处理
 
+    # 使用正确的 'set key value' 语法构建 iPXE 脚本
     script = [
-        "#!ipxe", "rem Predefined information about this machine",
-        f"set pcname {info['pcname']}", f"set ip {info['ip']}", f"set mask {info['mask']}",
-        f"set gateway {info['gateway']}", f"set dns1 {info['dns1']}",
-        f"set dns2 {info['dns2']}", f"set mac {info['mac']}",
+        "#!ipxe",
+        "rem Predefined information about this machine",
+        f"set pcname {info['pcname']}",
+        f"set ip {info['ip']}",
+        f"set mask {info['mask']}",
+        f"set gateway {info['gateway']}",
+        f"set dns1 {info['dns1']}",
+        f"set dns2 {info['dns2']}",
+        f"set mac {info['mac']}",
     ]
+    
     return "\n".join(script)
-
 
 def _generate_unattend_xml(client_ip: str) -> str:
     """
     根据客户端IP从客户列表中获取计算机名，生成一个简单的unattend.xml文件内容。
     """
-    computer_name = ""
-    mac_address = _CLIENT_MANAGER.ip_to_mac.get(client_ip) if _CLIENT_MANAGER else None
-    
+    computer_name = ""  # 如果未找到，默认为空
+
+    # 从实时的 ClientManager 映射中获取 MAC 地址
+    mac_address = None
+    if _CLIENT_MANAGER and hasattr(_CLIENT_MANAGER, 'ip_to_mac'):
+        mac_address = _CLIENT_MANAGER.ip_to_mac.get(client_ip)
+
+    # 如果找到 MAC 地址，则从 INI 配置文件中查找计算机名
     if mac_address:
         mac_norm = mac_address.upper().replace(':', '-')
+        
         CONFIG_INI_FILENAME = 'ipxefm_cli.ini'
         if os.path.exists(CONFIG_INI_FILENAME):
             config = configparser.ConfigParser(interpolation=None)
@@ -289,10 +292,12 @@ def _generate_unattend_xml(client_ip: str) -> str:
                 if config.has_section(mac_norm):
                     computer_name = config.get(mac_norm, 'name', fallback='')
             except Exception as e:
-                print(f"Error reading {CONFIG_INI_FILENAME} for {mac_norm}: {e}")
-                pass
-    
-    return f"""<?xml version="1.0" encoding="utf-8"?>    
+                # 如有需要，可打印错误用于调试
+                print(f"为 {mac_norm} 读取 {CONFIG_INI_FILENAME} 时出错: {e}")
+                pass  # 静默失败，computer_name 保持为 ""
+
+    # 构建 XML 字符串
+    xml_content = f"""<?xml version="1.0" encoding="utf-8"?>    
 <unattend xmlns="urn:schemas-microsoft-com:unattend">    
     <settings pass="windowsPE">    
         <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">    
@@ -304,6 +309,7 @@ def _generate_unattend_xml(client_ip: str) -> str:
 </unattend>
 """
 
+    return xml_content
 
 def generate_dynamic_script(params: dict, client_ip: str) -> str:
     """
@@ -311,61 +317,54 @@ def generate_dynamic_script(params: dict, client_ip: str) -> str:
     """
     http_uri = _SERVER_CONFIG.get('http_uri', 'http://127.0.0.1')
     
-    # 1. 优先处理绑定请求 (返回完整脚本)
+    # 1. 优先处理绑定请求
     if 'myip' in params and 'mymac' in params:
         ip_to_bind = params['myip'][0]
         mac_to_bind = params['mymac'][0]
+        print(f"Dynamic script request to bind MAC {mac_to_bind} to IP {ip_to_bind}")
         return _perform_mac_binding(ip_to_bind, mac_to_bind)
 
     # 2. 其次处理 bootfile 参数
     bootfile = params.get('bootfile', [None])[0]
     if bootfile:
-        bootfile = unquote(bootfile).strip('"')
+        bootfile = unquote(bootfile)
+        bootfile = bootfile.strip('"')
         
-        # 2a. 特殊功能关键字 (返回完整脚本)
+        # 2a. 处理 'getmyxml' 生成 unattend.xml
         if bootfile.lower() == 'getmyxml':
+            print(f"Dynamic script request for unattend.xml ('getmyxml') from {client_ip}")
             return _generate_unattend_xml(client_ip)
+        
+        # 2b. 处理 'getmyip' 获取客户端信息
         if bootfile.lower() == 'getmyip':
+            print(f"Dynamic script request for client info ('getmyip') from {client_ip}")
             return _generate_client_info_script(client_ip)
+        
+        # 2c. 处理 'whoami' 请求
         if bootfile.lower() == 'whoami':
+            print(f"Dynamic script request for client identification ('whoami') from {client_ip}")
             return _generate_whoami_menu(http_uri)
+        
+        # 2d. 处理 'ipxefm' 请求
         if bootfile.lower() == 'ipxefm':
+            print(f"Dynamic script request to list all bootable files ('ipxefm') from {client_ip}")
             return _generate_all_files_menu(http_uri)
         
-        # 2b. 处理常规文件引导
+        # 2e. 处理常规文件引导
+        print(f"Dynamic script request for direct boot: '{bootfile}' from {client_ip}")
         file_ext = os.path.splitext(bootfile)[1].lower()
-        type_name = CHAINLOAD_MAP.get(file_ext)
 
-        # =======================[ 修改开始 ]=======================
-        # 此处是核心修正区域
-        if type_name:
-            # 获取 iPXE 客户端需要使用的 booturl 地址
-            boot_url_value = _SERVER_CONFIG.get('boot_url', '127.0.0.1:80')
-            
-            # 生成链式加载到特定类型处理脚本的指令片段
-            chain_script = _generate_chainload_script(bootfile, type_name)
-
-            # 正确地组合最终脚本:
-            # 1. iPXE 脚本必须以 #!ipxe 开头。
-            # 2. 必须先定义 booturl 变量，因为 HEADER 部分会用到它 (例如 themes 路径)。
-            # 3. 然后是全局设置 HEADER。
-            # 4. 最后是链式加载指令。
-            
-            # 从 HEADER 中移除它自带的 #!ipxe，以便我们能控制脚本的开头
-            header_body = IPXEFM_GLOBAL_SETTINGS_HEADER.lstrip("#!ipxe").strip()
-            
-            # 组装最终脚本
-            final_script = (
-                "#!ipxe\n"
-                f"set booturl {boot_url_value}\n"
-                f"{header_body}\n"
-                f"{chain_script}"
-            )
-            return final_script
-        # =======================[ 修改结束 ]=======================
+        if file_ext == '.wim':
+            return _generate_wim_boot_script(bootfile, http_uri)
+        elif file_ext == '.iso':
+            return _generate_iso_boot_script(bootfile, http_uri)
+        elif file_ext == '.efi':
+            return _generate_efi_boot_script(bootfile, http_uri)
+        elif file_ext in ('.vhd', '.img', '.ima'):
+            return _generate_disk_image_boot_script(bootfile, http_uri)
         else:
-            # 如果文件类型不支持，返回一个错误提示脚本
             return f"#!ipxe\necho Unsupported file type: {bootfile}\nsleep 5\nchain {http_uri}/dynamic.ipxe?bootfile=ipxefm"
     
-    # 3. 如果没有 bootfile 参数，默认显示 'ipxefm' 菜单 (返回完整脚本)
+    # 3. 如果没有 bootfile 参数，默认显示 'ipxefm' 菜单
+    print(f"Default dynamic script request from {client_ip}, showing 'ipxefm' menu.")
     return _generate_all_files_menu(http_uri)

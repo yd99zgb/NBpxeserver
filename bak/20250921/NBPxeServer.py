@@ -1486,7 +1486,7 @@ class ConfigWindow(tk.Toplevel):
 class NBpxeApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("NBPXE 服务器 20250921")
+        self.root.title("NBPXE 服务器 20250916")
         self.root.geometry("800x600")
         main_frame = ttk.Frame(root, padding="10")
         main_frame.pack(fill="both", expand=True)
